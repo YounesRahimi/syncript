@@ -375,53 +375,72 @@ def _stignore_to_find_prunes(root: Path) -> str:
 def start_remote_scan(mgr: SSHManager, patterns: list) -> str:
     """
     Fire a tmux/background `find` on the remote.
-    Returns the path of the remote output file (unique per run).
+    Returns the path of the remote marker file (unique per run).
+    The actual TSV is compressed to a .tsv.gz; a small `.done` marker
+    is written when the gzip is complete so the client can poll the marker
+    and then download & decompress the gz on the local side.
     """
     scan_id = uuid.uuid4().hex
-    out_file = f"{REMOTE_TMP}/sync_scan_{scan_id}.tsv"
+    marker_file = f"{REMOTE_TMP}/sync_scan_{scan_id}.done"
+    remote_gz = f"{REMOTE_TMP}/sync_scan_{scan_id}.tsv.gz"
     prune_expr = _stignore_to_find_prunes(LOCAL_ROOT)
 
-    # find outputs: mtime (seconds since epoch) \t size \t path
-    # Then we reformat to rel_path \t mtime \t size
+    # find outputs: rel_path \t mtime_epoch \t size
     remote_root_str = str(REMOTE_ROOT)
 
-    # Use nohup + sh so it survives even if our SSH channel drops
-    # find outputs: rel_path \t mtime_epoch \t size
-    # -printf %P gives path relative to the search root
+    # Use nohup + sh so it survives even if our SSH channel drops.
+    # Pipe through gzip to produce a compressed TSV, then write a small
+    # marker file to indicate completion.
     find_cmd = (
         "nohup sh -c '"
         f"find {remote_root_str} {prune_expr} -type f "
         r'-printf "%P\t%T@\t%s\n" '
         "2>/dev/null "
-        r'| awk -F"\t" "{if (\$1 != \"\") print \$0}" '
-        f"> {out_file} "
-        f"&& echo SCAN_DONE >> {out_file}"
+        f'| gzip -c > "{remote_gz}" '
+        f"&& echo SCAN_DONE > '{marker_file}'"
         "' >/dev/null 2>&1 &"
     )
 
-    log(f"[scan] Firing remote scan → {out_file}")
+    log(f"[scan] Firing remote scan → {remote_gz} (marker: {marker_file})")
     log(f"  find command: {find_cmd}")
     mgr.exec_nowait(find_cmd)
-    return out_file
+    return marker_file
 
 
-def poll_remote_scan(mgr: SSHManager, out_file: str,
-                     poll_interval: int = 5,
-                     poll_timeout: int = 120) -> dict[str, tuple[float, int]]:
+def poll_remote_scan(mgr: SSHManager, marker_file: str,
+                     poll_interval: int, poll_timeout: int) -> dict:
     """
-    Poll until the remote scan file ends with SCAN_DONE.
-    Returns {rel_path: (mtime, size)}.
+    Poll the remote marker file until SCAN_DONE is present, then download
+    the corresponding .tsv.gz, decompress it locally and parse the TSV.
+    Returns the parsed scan dict.
     """
+    import gzip
+
     deadline = time.monotonic() + poll_timeout
     dots = 0
 
+    # Derive remote gz path from marker name
+    if marker_file.endswith(".done"):
+        remote_gz = marker_file[:-5] + ".tsv.gz"  # strip ".done", add ".tsv.gz"
+    else:
+        remote_gz = marker_file + ".tsv.gz"
+
+    log(f"[scan] Polling for remote scan marker {marker_file} …")
     while time.monotonic() < deadline:
         try:
-            if mgr.sftp_exists(out_file):
-                content = mgr.sftp_read_text(out_file)
+            if mgr.sftp_exists(marker_file):
+                content = mgr.sftp_read_text(marker_file)
                 if content.rstrip().endswith("SCAN_DONE"):
                     log(f"\n[scan] Remote scan complete.")
-                    return _parse_scan_output(content)
+                    # Download compressed TSV and decompress locally for parsing
+                    tmp_gz = Path(tempfile.mktemp(suffix=".tsv.gz"))
+                    try:
+                        mgr.sftp_get(remote_gz, str(tmp_gz))
+                        with gzip.open(str(tmp_gz), "rt", encoding="utf-8", errors="replace") as gf:
+                            tsv_text = gf.read()
+                        return _parse_scan_output(tsv_text)
+                    finally:
+                        tmp_gz.unlink(missing_ok=True)
             print(".", end="", flush=True)
             dots += 1
             if dots % 20 == 0:
@@ -433,7 +452,7 @@ def poll_remote_scan(mgr: SSHManager, out_file: str,
 
     raise TimeoutError(
         f"Remote scan did not finish within {poll_timeout}s. "
-        f"Check {out_file} on the remote manually."
+        f"Check {marker_file} (and corresponding .tsv.gz) on the remote manually."
     )
 
 
