@@ -49,6 +49,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Optional
+import csv
 
 # ── third-party ─────────────────────────────────────────────────────────────
 try:
@@ -75,7 +76,7 @@ LOCAL_ROOT = Path(r"C:\Users\bs\projects\jibit\cloud")
 REMOTE_ROOT = PurePosixPath("/root/projects/jibit/cloud")
 
 STIGNORE_FILE = "./.stignore"
-STATE_FILE = LOCAL_ROOT / ".sync_state.json"
+STATE_FILE = LOCAL_ROOT / ".sync_state.csv"
 PROGRESS_FILE = LOCAL_ROOT / ".sync_progress.json"
 
 # Remote temp dir for scan output + batch tarballs
@@ -109,7 +110,7 @@ def warn(msg: str):
     log(f"⚠  {msg}")
 
 
-# ══════════════════════════════════════════════════════════════════════════════
+# ═════════════════════════════════════════════════════════════════════════════���
 #  RETRY DECORATOR
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -402,7 +403,7 @@ def start_remote_scan(mgr: SSHManager, patterns: list) -> str:
     )
 
     log(f"[scan] Firing remote scan → {remote_gz} (marker: {marker_file})")
-    log(f"  find command: {find_cmd}")
+    # log(f"  find command: {find_cmd}")
     mgr.exec_nowait(find_cmd)
     return marker_file
 
@@ -506,18 +507,96 @@ def local_list_all(root: Path, patterns: list) -> dict[str, tuple[float, int]]:
 
 def load_state() -> dict:
     """
-    Format: {rel_path: {"lmtime": f, "lsize": i, "rmtime": f, "rsize": i}}
+    Legacy-compatible loader.
+
+    In-memory format stays:
+      { rel_path: {"lmtime": float, "lsize": int, "rmtime": float, "rsize": int}, ... }
+
+    On-disk:
+      - If file starts with '{' -> treat as legacy JSON and parse via json.loads
+      - Otherwise treat as CSV with header: rel,lmtime,lsize,rmtime,rsize
     """
-    if STATE_FILE.exists():
+    if not STATE_FILE.exists():
+        return {}
+
+    try:
+        text = STATE_FILE.read_text("utf-8")
+    except Exception:
+        return {}
+
+    s = text.lstrip()
+    # Legacy JSON detection & parse (for backward compatibility / migration)
+    if s.startswith("{"):
         try:
-            return json.loads(STATE_FILE.read_text("utf-8"))
+            return json.loads(text)
         except Exception:
+            # fallthrough to try CSV parsing below
             pass
-    return {}
+
+    # Parse CSV
+    import io
+    result: dict = {}
+    try:
+        reader = csv.DictReader(io.StringIO(text))
+        for row in reader:
+            rel = row.get("rel")
+            if not rel:
+                continue
+            try:
+                lmtime = float(row.get("lmtime") or 0.0)
+            except Exception:
+                lmtime = 0.0
+            try:
+                lsize = int(row.get("lsize") or 0)
+            except Exception:
+                lsize = 0
+            try:
+                rmtime = float(row.get("rmtime") or 0.0)
+            except Exception:
+                rmtime = 0.0
+            try:
+                rsize = int(row.get("rsize") or 0)
+            except Exception:
+                rsize = 0
+            result[rel] = {
+                "lmtime": lmtime,
+                "lsize": lsize,
+                "rmtime": rmtime,
+                "rsize": rsize,
+            }
+    except Exception:
+        return {}
+
+    return result
 
 
 def save_state(state: dict):
-    STATE_FILE.write_text(json.dumps(state, indent=2, sort_keys=True), "utf-8")
+    """
+    Write state as CSV for compactness.
+
+    Header: rel,lmtime,lsize,rmtime,rsize
+    """
+    try:
+        with STATE_FILE.open("w", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f)
+            writer.writerow(["rel", "lmtime", "lsize", "rmtime", "rsize"])
+            for rel in sorted(state.keys()):
+                entry = state[rel]
+                # Use repr for floats to preserve precision; ints written directly
+                lmtime = entry.get("lmtime", "")
+                lsize = entry.get("lsize", "")
+                rmtime = entry.get("rmtime", "")
+                rsize = entry.get("rsize", "")
+                writer.writerow([
+                    rel,
+                    "" if lmtime == "" else repr(lmtime),
+                    "" if lsize == "" else int(lsize),
+                    "" if rmtime == "" else repr(rmtime),
+                    "" if rsize == "" else int(rsize),
+                ])
+    except Exception:
+        # Best effort: don't crash the sync if state save fails
+        warn("Failed to save state file (CSV).")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1101,7 +1180,7 @@ def decide(local_files: dict[str, tuple[float, int]],
 #  MAIN
 # ══════════════════════════════════════════════════════════════════════════════
 
-BATCH_SIZE = 50  # max files per tar batch
+BATCH_SIZE = 100  # max files per tar batch
 
 
 def run_sync(dry_run=False, verbose=False, force=False,
