@@ -1,6 +1,8 @@
-# sync.py v2 — Unstable-Connection-Tolerant Bidirectional SSH Sync
+# syncript v2 — Unstable-Connection-Tolerant Bidirectional SSH Sync
 
 Syncs `C:\Users\bs\projects\jibit\cloud`  ↔  `root@136.0.10.24:9011:/root/projects/jibit/cloud`
+
+> **📦 Now refactored into a modular Python package!** See [REFACTORING_NOTES.md](REFACTORING_NOTES.md) for details.
 
 ---
 
@@ -9,8 +11,13 @@ Syncs `C:\Users\bs\projects\jibit\cloud`  ↔  `root@136.0.10.24:9011:/root/proj
 ```bash
 pip install paramiko
 
+# Original way (still works)
 python syncript.py --dry-run   # preview first
 python syncript.py             # real sync
+
+# Or as a Python module
+python -m syncript --dry-run
+python -m syncript
 ```
 
 ---
