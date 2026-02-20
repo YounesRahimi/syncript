@@ -4,7 +4,7 @@ Delete operations (local and remote)
 from typing import Optional
 from pathlib import PurePosixPath
 from ..core.ssh_manager import SSHManager
-from ..config import REMOTE_ROOT
+from .. import config as _cfg
 from ..utils.logging import log, warn
 from ..state.state_manager import save_state
 from ..state.progress_manager import save_progress
@@ -90,7 +90,7 @@ def delete_remote(mgr: SSHManager, rel_paths: list[str],
         return
 
     # Batch delete with one `rm` command for the confirmed set
-    quoted = " ".join(f"'{REMOTE_ROOT}/{r}'" for r in confirmed)
+    quoted = " ".join(f"'{_cfg.REMOTE_ROOT}/{r}'" for r in confirmed)
     cmd = f"rm -f {quoted}"
     try:
         mgr.exec(cmd, timeout=30)
@@ -104,7 +104,7 @@ def delete_remote(mgr: SSHManager, rel_paths: list[str],
         warn(f"Batch remote delete failed: {exc}; will try one-by-one")
         for rel in confirmed:
             try:
-                mgr.sftp_remove(f"{REMOTE_ROOT}/{rel}")
+                mgr.sftp_remove(f"{_cfg.REMOTE_ROOT}/{rel}")
                 state.pop(rel, None)
                 prog.setdefault("deleted_r", []).append(rel)
                 log(f"  [DEL-REMOTE ✓] {rel}")

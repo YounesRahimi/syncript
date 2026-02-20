@@ -2,67 +2,139 @@
 """
 syncript  —  Unstable-connection-tolerant bidirectional SSH sync
 ================================================================
+Author: Younes Rahimi
 
-Optimizations over v1:
-  ① Remote scan is ASYNC via tmux + `find` (one fire-and-forget command).
-    The script fires `find … > /tmp/sync_scan_<uuid>.tsv` inside tmux,
-    then polls for the output file — no SFTP directory-walking round-trips.
-  ② Files compared by mtime + size only (no MD5 / no reading remote content).
-  ③ Transfers use tar+gzip batching:  push N files → ONE .tar.gz upload +
-    ONE remote `tar x` command.  Pull N files → ONE remote `tar c` + download.
-  ④ Checkpoint/resume: a .sync_progress.json tracks every completed transfer.
-    A crashed/interrupted run restarts from exactly where it left off.
-  ⑤ Every remote operation is wrapped in a retry-with-backoff decorator.
-  ⑥ SSH keep-alive + auto-reconnect on drop.
-  ⑦ Temp files on remote are UUID-named and always cleaned up.
+Subcommands:
+  init    Create a .syncript config file in the current directory.
+  sync    Run a bidirectional sync using the nearest .syncript config.
+  status  Show pending changes and last sync time from sync metadata.
 
-Usage:
-  python syncript.py [options]
-
-Options:
-  -n, --dry-run     Preview changes without applying them
-  -v, --verbose     Show every file considered, not just actions
-  -f, --force       Force full rescan (ignore state and progress cache)
-  --push-only       Only push local→remote
-  --pull-only       Only pull remote→local
-  --poll-interval N Seconds between remote-scan polls (default: 5)
-  --poll-timeout  N Max seconds to wait for remote scan (default: 120)
-  -h, --help        Show this help
-
-Requirements:
-  pip install paramiko
+Run 'syncript <subcommand> --help' for more details.
 """
+import sys
 import argparse
-from syncript.core.sync_engine import run_sync
+from pathlib import Path
 
 
-def main():
-    """CLI entry point for syncript"""
-    parser = argparse.ArgumentParser(
-        description="Unstable-connection-tolerant bidirectional SSH sync",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog=__doc__,
-    )
-    parser.add_argument("-n", "--dry-run", action="store_true",
-                        help="Preview without applying changes")
-    parser.add_argument("-v", "--verbose", action="store_true",
-                        help="Show every file, not just actions")
-    parser.add_argument("-f", "--force", action="store_true",
-                        help="Ignore state+progress cache (full rescan)")
-    parser.add_argument("--push-only", action="store_true",
-                        help="Only local→remote")
-    parser.add_argument("--pull-only", action="store_true",
-                        help="Only remote→local")
-    parser.add_argument("--poll-interval", type=int, default=5,
-                        metavar="N",
-                        help="Seconds between remote-scan polls (default: 5)")
-    parser.add_argument("--poll-timeout", type=int, default=120,
-                        metavar="N",
-                        help="Max seconds to wait for remote scan (default: 120)")
-    args = parser.parse_args()
+# ── init ─────────────────────────────────────────────────────────────────────
 
-    if args.push_only and args.pull_only:
-        parser.error("--push-only and --pull-only are mutually exclusive")
+def cmd_init(args):
+    """Create a .syncript profile file in the current directory."""
+    from syncript import config as _cfg
+
+    target = Path.cwd() / ".syncript"
+
+    if target.exists() and not args.force:
+        print(f"error: .syncript already exists in {Path.cwd()}", file=sys.stderr)
+        print("Use --force to overwrite.", file=sys.stderr)
+        sys.exit(1)
+
+    # Load global defaults
+    global_cfg = _cfg.load_global_config()
+    g_defaults = global_cfg.get("defaults", {})
+
+    # Resolve local root
+    local_root = args.local or str(Path.cwd())
+    local_path = Path(local_root).expanduser()
+    if not local_path.exists():
+        if args.verbose:
+            print(f"  Local path does not exist yet: {local_path}")
+    local_root = str(local_path)
+
+    # Resolve remote root
+    remote_root = args.remote
+    if not remote_root:
+        if sys.stdin.isatty():
+            default_rr = Path.cwd().name
+            prompt_hint = f" [{default_rr}]" if default_rr else ""
+            remote_root = input(f"Remote path (relative to base_remote){prompt_hint}: ").strip()
+            if not remote_root:
+                remote_root = default_rr
+        else:
+            remote_root = Path.cwd().name
+
+    if not remote_root:
+        print("error: remote path is required.", file=sys.stderr)
+        sys.exit(1)
+
+    # Resolve server
+    server = args.server or g_defaults.get("server", "example.com")
+    if not args.server and sys.stdin.isatty():
+        val = input(f"Server hostname [{server}]: ").strip()
+        if val:
+            server = val
+
+    # Resolve port
+    port = args.port or int(g_defaults.get("port", 22))
+    if not args.port and sys.stdin.isatty():
+        val = input(f"SSH port [{port}]: ").strip()
+        if val:
+            try:
+                port = int(val)
+            except ValueError:
+                print("error: port must be a number.", file=sys.stderr)
+                sys.exit(1)
+
+    # Resolve base_remote
+    base_remote = args.base_remote or g_defaults.get("base_remote", "")
+
+    profile_name = args.profile or "default"
+
+    lines = [
+        "# .syncript — syncript project configuration",
+        "# Author: Younes Rahimi",
+        "#",
+        "# profiles: list of sync profiles for this project.",
+        "# Each profile has: name, server, port, local_root, remote_root.",
+        "# remote_root is relative to defaults.base_remote when it does not start with '/'.",
+        "profiles:",
+        f"  - name: {profile_name}",
+        f"    server: \"{server}\"",
+        f"    port: {port}",
+        f"    local_root: \"{local_root}\"",
+        f"    remote_root: \"{remote_root}\"",
+    ]
+
+    if base_remote:
+        lines += [
+            "defaults:",
+            f"  base_remote: \"{base_remote}\"",
+            f"  server: \"{server}\"",
+            f"  port: {port}",
+        ]
+
+    content = "\n".join(lines) + "\n"
+
+    if args.dry_run:
+        print(f"[dry-run] Would write {target}:")
+        print(content)
+        return
+
+    target.write_text(content, encoding="utf-8")
+    print(f"Created {target}")
+    if args.verbose:
+        print(content)
+
+
+# ── sync ─────────────────────────────────────────────────────────────────────
+
+def cmd_sync(args):
+    """Run sync using the nearest .syncript config file."""
+    import syncript.config as _cfg
+    from syncript.core.sync_engine import run_sync
+
+    syncript_path = _cfg.find_syncript()
+    if syncript_path is None:
+        print("error: no .syncript file found in this directory or any parent.", file=sys.stderr)
+        print("Run 'syncript init' to create one.", file=sys.stderr)
+        sys.exit(1)
+
+    if args.verbose:
+        print(f"[config] Using {syncript_path}")
+
+    data = _cfg.load_syncript_file(syncript_path)
+    profile = _cfg.get_profile(data, args.profile or "default")
+    _cfg.apply_profile(profile)
 
     run_sync(
         dry_run=args.dry_run,
@@ -73,6 +145,139 @@ def main():
         poll_interval=args.poll_interval,
         poll_timeout=args.poll_timeout,
     )
+
+
+# ── status ────────────────────────────────────────────────────────────────────
+
+def cmd_status(args):
+    """Show pending changes and last sync metadata."""
+    import syncript.config as _cfg
+    from syncript.state.state_manager import load_state
+
+    syncript_path = _cfg.find_syncript()
+    if syncript_path is None:
+        print("error: no .syncript file found in this directory or any parent.", file=sys.stderr)
+        print("Run 'syncript init' to create one.", file=sys.stderr)
+        sys.exit(1)
+
+    if args.verbose:
+        print(f"[config] Using {syncript_path}")
+
+    data = _cfg.load_syncript_file(syncript_path)
+    profile = _cfg.get_profile(data, args.profile or "default")
+    _cfg.apply_profile(profile)
+
+    state = load_state()
+    progress_file = _cfg.get_progress_file()
+
+    print(f"\nProfile : {profile.get('name', 'default')}")
+    print(f"Local   : {_cfg.LOCAL_ROOT}")
+    print(f"Remote  : {_cfg.SSH_USER}@{_cfg.SSH_HOST}:{_cfg.SSH_PORT}:{_cfg.REMOTE_ROOT}")
+    print(f"Tracked : {len(state)} file(s)")
+
+    if progress_file.exists():
+        import json
+        try:
+            prog = json.loads(progress_file.read_text("utf-8"))
+            pushed = len(prog.get("pushed", []))
+            pulled = len(prog.get("pulled", []))
+            if pushed or pulled:
+                print(f"\n⚠  Incomplete sync session detected:")
+                print(f"   Pushed so far : {pushed}")
+                print(f"   Pulled so far : {pulled}")
+                print("   Run 'syncript sync' to resume.")
+        except Exception:
+            pass
+    else:
+        print("\nNo in-progress sync session.")
+
+
+# ── main ──────────────────────────────────────────────────────────────────────
+
+def main():
+    """CLI entry point for syncript"""
+    parser = argparse.ArgumentParser(
+        prog="syncript",
+        description="Unstable-connection-tolerant bidirectional SSH sync",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+
+    subparsers = parser.add_subparsers(dest="command", metavar="COMMAND")
+
+    # ── init ──────────────────────────────────────────────────────────────────
+    init_p = subparsers.add_parser(
+        "init",
+        help="Create a .syncript config file in the current directory",
+        description="Create a .syncript YAML config file for this project.",
+    )
+    init_p.add_argument("--local", metavar="PATH",
+                        help="Local root directory (default: current directory)")
+    init_p.add_argument("--remote", metavar="PATH",
+                        help="Remote root path (relative to base_remote or absolute)")
+    init_p.add_argument("--server", metavar="HOST",
+                        help="Remote server hostname or IP")
+    init_p.add_argument("--port", type=int, metavar="N",
+                        help="SSH port (default: 22)")
+    init_p.add_argument("--base-remote", metavar="PATH",
+                        help="Base remote path prepended to relative remote roots")
+    init_p.add_argument("--profile", metavar="NAME", default="default",
+                        help="Profile name to create (default: default)")
+    init_p.add_argument("--force", action="store_true",
+                        help="Overwrite existing .syncript")
+    init_p.add_argument("-n", "--dry-run", action="store_true",
+                        help="Preview without writing files")
+    init_p.add_argument("-v", "--verbose", action="store_true",
+                        help="Show extra output")
+
+    # ── sync ──────────────────────────────────────────────────────────────────
+    sync_p = subparsers.add_parser(
+        "sync",
+        help="Run bidirectional sync using the nearest .syncript config",
+        description="Sync local and remote using settings from .syncript.",
+    )
+    sync_p.add_argument("--profile", metavar="NAME", default="default",
+                        help="Profile to use (default: default)")
+    sync_p.add_argument("-n", "--dry-run", action="store_true",
+                        help="Preview without applying changes")
+    sync_p.add_argument("-v", "--verbose", action="store_true",
+                        help="Show every file, not just actions")
+    sync_p.add_argument("-f", "--force", action="store_true",
+                        help="Ignore state+progress cache (full rescan)")
+    sync_p.add_argument("--push-only", action="store_true",
+                        help="Only local→remote")
+    sync_p.add_argument("--pull-only", action="store_true",
+                        help="Only remote→local")
+    sync_p.add_argument("--poll-interval", type=int, default=5, metavar="N",
+                        help="Seconds between remote-scan polls (default: 5)")
+    sync_p.add_argument("--poll-timeout", type=int, default=120, metavar="N",
+                        help="Max seconds to wait for remote scan (default: 120)")
+
+    # ── status ────────────────────────────────────────────────────────────────
+    status_p = subparsers.add_parser(
+        "status",
+        help="Show pending changes and last sync time",
+        description="Show sync status for the nearest .syncript config.",
+    )
+    status_p.add_argument("--profile", metavar="NAME", default="default",
+                          help="Profile to use (default: default)")
+    status_p.add_argument("-v", "--verbose", action="store_true",
+                          help="Show extra output")
+    status_p.add_argument("-n", "--dry-run", action="store_true",
+                          help="(no-op for status, kept for consistency)")
+
+    args = parser.parse_args()
+
+    if args.command == "init":
+        cmd_init(args)
+    elif args.command == "sync":
+        if args.push_only and args.pull_only:
+            sync_p.error("--push-only and --pull-only are mutually exclusive")
+        cmd_sync(args)
+    elif args.command == "status":
+        cmd_status(args)
+    else:
+        parser.print_help()
+        sys.exit(1)
 
 
 if __name__ == "__main__":

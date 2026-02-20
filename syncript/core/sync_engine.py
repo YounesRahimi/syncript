@@ -5,7 +5,7 @@ import sys
 import traceback
 from pathlib import Path
 from typing import Optional
-from ..config import LOCAL_ROOT, REMOTE_ROOT, REMOTE_TMP, SSH_HOST, SSH_PORT, SSH_USER, STIGNORE_FILE, MTIME_TOLERANCE
+from .. import config as _cfg
 from ..core.ssh_manager import SSHManager
 from ..utils.logging import log, vlog, warn, set_verbose
 from ..utils.ignore_patterns import load_ignore_patterns, is_ignored
@@ -72,7 +72,7 @@ def decide(local_files: dict[str, tuple[float, int]],
             else:
                 # New local file
                 if not pull_only and rel not in done_push:
-                    plan["to_push"].append((rel, LOCAL_ROOT / rel))
+                    plan["to_push"].append((rel, _cfg.LOCAL_ROOT / rel))
             continue
 
         # ── Only remote ──────────────────────────────────────────────────────
@@ -101,7 +101,7 @@ def decide(local_files: dict[str, tuple[float, int]],
         if l_changed and r_changed:
             # Both changed — check if they're actually the same size+mtime
             # (can happen on first run with matching files)
-            if abs(l_mtime - r_mtime) <= MTIME_TOLERANCE and l_size == r_size:
+            if abs(l_mtime - r_mtime) <= _cfg.MTIME_TOLERANCE and l_size == r_size:
                 vlog(f"  [SKIP-SAME] {rel}")
                 # Record as synced so we don't revisit
                 state[rel] = {
@@ -116,12 +116,12 @@ def decide(local_files: dict[str, tuple[float, int]],
             else:
                 lmtime_diff = abs(l_mtime - prev_lmtime)
                 rmtime_diff = abs(r_mtime - prev_rmtime) if prev_rmtime is not None else None
-                if lmtime_diff > MTIME_TOLERANCE or l_size != prev_lsize:
+                if lmtime_diff > _cfg.MTIME_TOLERANCE or l_size != prev_lsize:
                     reason_parts.append(
                         f"local changed (mtime Δ={lmtime_diff:.0f}s, "
                         f"size {prev_lsize}→{l_size})"
                     )
-                if rmtime_diff is not None and (rmtime_diff > MTIME_TOLERANCE or r_size != prev_rsize):
+                if rmtime_diff is not None and (rmtime_diff > _cfg.MTIME_TOLERANCE or r_size != prev_rsize):
                     reason_parts.append(
                         f"remote changed (mtime Δ={rmtime_diff:.0f}s, "
                         f"size {prev_rsize}→{r_size})"
@@ -131,7 +131,7 @@ def decide(local_files: dict[str, tuple[float, int]],
             continue
 
         if l_changed and not pull_only:
-            plan["to_push"].append((rel, LOCAL_ROOT / rel))
+            plan["to_push"].append((rel, _cfg.LOCAL_ROOT / rel))
         elif r_changed and not push_only:
             plan["to_pull"].append(rel)
 
@@ -144,15 +144,15 @@ def run_sync(dry_run=False, verbose=False, force=False,
     set_verbose(verbose)
 
     print(f"\n{'=' * 64}")
-    print(f"  Sync  {LOCAL_ROOT}")
-    print(f"   ↔   {SSH_USER}@{SSH_HOST}:{SSH_PORT}:{REMOTE_ROOT}")
+    print(f"  Sync  {_cfg.LOCAL_ROOT}")
+    print(f"   ↔   {_cfg.SSH_USER}@{_cfg.SSH_HOST}:{_cfg.SSH_PORT}:{_cfg.REMOTE_ROOT}")
     print(f"{'=' * 64}")
     if dry_run:
         print("  *** DRY-RUN — no files will be changed ***")
     print()
 
-    patterns = load_ignore_patterns(LOCAL_ROOT)
-    log(f"[ignore] {len(patterns)} pattern(s) loaded from {STIGNORE_FILE}")
+    patterns = load_ignore_patterns(_cfg.LOCAL_ROOT)
+    log(f"[ignore] {len(patterns)} pattern(s) loaded from {_cfg.STIGNORE_FILE}")
 
     # ── Pre-flight: check for leftover conflict files ──────────────────────
     if not check_existing_conflicts(dry_run):
@@ -179,7 +179,7 @@ def run_sync(dry_run=False, verbose=False, force=False,
 
         # ── 2. Do local scan while remote is running ───────────────────────
         log("[scan] Scanning local files …")
-        local_files = local_list_all(LOCAL_ROOT, patterns)
+        local_files = local_list_all(_cfg.LOCAL_ROOT, patterns)
         log(f"[scan] {len(local_files)} local file(s) found")
 
         # ── 3. Wait for remote scan ─────────────────────────────────────────
@@ -255,7 +255,7 @@ def run_sync(dry_run=False, verbose=False, force=False,
                 log("Local deletions skipped by user.")
             else:
                 for rel in confirmed_local:
-                    lpath = LOCAL_ROOT / rel
+                    lpath = _cfg.LOCAL_ROOT / rel
                     lpath.unlink(missing_ok=True)
                     state.pop(rel, None)
                     progress.setdefault("deleted_l", []).append(rel)
@@ -270,8 +270,8 @@ def run_sync(dry_run=False, verbose=False, force=False,
         if plan["conflicts"]:
             log(f"[conflict] Handling {n_conf} conflict(s) …")
             for rel, reason in plan["conflicts"]:
-                lpath = LOCAL_ROOT / rel
-                remote_path = str(REMOTE_ROOT / rel)
+                lpath = _cfg.LOCAL_ROOT / rel
+                remote_path = str(_cfg.REMOTE_ROOT / rel)
                 save_conflict(mgr, rel, lpath, remote_path, dry_run, reason)
 
         # ── 9. Final state save + clear progress ───────────────────────────

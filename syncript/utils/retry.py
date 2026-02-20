@@ -4,7 +4,7 @@ Retry decorator for network operations
 import functools
 import time
 from .logging import log, warn
-from ..config import RETRY_MAX, RETRY_BASE_DELAY
+from .. import config as _cfg
 
 
 def retried(fn):
@@ -12,14 +12,14 @@ def retried(fn):
 
     @functools.wraps(fn)
     def wrapper(*args, **kwargs):
-        delay = RETRY_BASE_DELAY
-        for attempt in range(1, RETRY_MAX + 1):
+        delay = _cfg.RETRY_BASE_DELAY
+        for attempt in range(1, _cfg.RETRY_MAX + 1):
             try:
                 return fn(*args, **kwargs)
             except Exception as exc:
-                if attempt == RETRY_MAX:
+                if attempt == _cfg.RETRY_MAX:
                     raise
-                warn(f"{fn.__name__} failed (attempt {attempt}/{RETRY_MAX}): {exc}")
+                warn(f"{fn.__name__} failed (attempt {attempt}/{_cfg.RETRY_MAX}): {exc}")
                 log(f"  retrying in {delay:.0f}s …")
                 time.sleep(delay)
                 delay = min(delay * 2, 60)

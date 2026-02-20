@@ -3,7 +3,7 @@ SSH connection manager with auto-reconnect and keep-alive
 """
 from typing import Optional
 import paramiko
-from ..config import SSH_HOST, SSH_PORT, SSH_USER, SSH_KEY_PATH, SSH_PASSWORD
+from .. import config as _cfg
 from ..utils.logging import log
 from ..utils.retry import retried
 
@@ -29,15 +29,15 @@ class SSHManager:
             except Exception:
                 self._close_quietly()
 
-        log(f"[SSH] connecting to {SSH_USER}@{SSH_HOST}:{SSH_PORT} …")
+        log(f"[SSH] connecting to {_cfg.SSH_USER}@{_cfg.SSH_HOST}:{_cfg.SSH_PORT} …")
         client = paramiko.SSHClient()
         client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-        kw: dict = dict(hostname=SSH_HOST, port=SSH_PORT, username=SSH_USER,
+        kw: dict = dict(hostname=_cfg.SSH_HOST, port=_cfg.SSH_PORT, username=_cfg.SSH_USER,
                         timeout=20, banner_timeout=30, auth_timeout=30)
-        if SSH_KEY_PATH:
-            kw["key_filename"] = SSH_KEY_PATH
-        if SSH_PASSWORD:
-            kw["password"] = SSH_PASSWORD
+        if _cfg.SSH_KEY_PATH:
+            kw["key_filename"] = _cfg.SSH_KEY_PATH
+        if _cfg.SSH_PASSWORD:
+            kw["password"] = _cfg.SSH_PASSWORD
 
         client.connect(**kw)
 

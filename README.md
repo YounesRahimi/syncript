@@ -1,44 +1,242 @@
 # syncript v2 — Unstable-Connection-Tolerant Bidirectional SSH Sync
 
-Syncs `C:\Users\bs\projects\jibit\cloud`  ↔  `root@136.0.10.24:9011:/root/projects/jibit/cloud`
+> **📦 Now with cross-platform installers and a generalised CLI!** See below for installation instructions.
 
-> **📦 Now refactored into a modular Python package!** See [REFACTORING_NOTES.md](REFACTORING_NOTES.md) for details.
+---
+
+## Installation
+
+### Unix / macOS / WSL
+
+```bash
+# Clone the repository
+git clone https://github.com/ynsr/syncript.git
+cd syncript
+
+# Run the installer
+chmod +x install-unix.sh
+./install-unix.sh
+
+# Reload your shell profile to update PATH
+source ~/.profile   # or ~/.bashrc / ~/.zshrc
+```
+
+The installer will:
+1. Verify Python 3 and pip are available.
+2. Install `paramiko` and `pyyaml` dependencies.
+3. Create a `syncript` wrapper in `~/.local/bin/`.
+4. Generate a sample global config at `~/.config/syncript/config.yaml`.
+5. Add `~/.local/bin` to your `PATH` if needed.
+
+**Options:**
+
+```bash
+./install-unix.sh --server=myhost.com --base-remote=/home/user  # set defaults
+./install-unix.sh --force                                         # reinstall / recreate config
+./install-unix.sh --uninstall                                     # remove installed files
+```
+
+### Windows (PowerShell)
+
+```powershell
+# Run the installer (may need to allow script execution)
+Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
+.\install-windows.ps1
+
+# Or with options
+.\install-windows.ps1 -Server myhost.com -BaseRemote /home/user -Port 22
+
+# Uninstall
+.\install-windows.ps1 -Uninstall
+```
+
+The installer creates a `syncript.cmd` wrapper in `%USERPROFILE%\bin` and adds it to your user PATH.
 
 ---
 
 ## Quick Start
 
 ```bash
-pip install paramiko
+pip install paramiko pyyaml   # if not using the installer
 
-# Original way (still works)
-python syncript.py --dry-run   # preview first
-python syncript.py             # real sync
+# 1. Initialise a project config in your local folder
+cd /path/to/your/project
+syncript init --server myhost.com --remote projects/myrepo --base-remote /home/user
 
-# Or as a Python module
-python -m syncript --dry-run
-python -m syncript
+# 2. Run a sync (dry-run first to preview)
+syncript sync --dry-run
+syncript sync
+
+# 3. Check status
+syncript status
 ```
 
 ---
 
-## What Changed from v1 (and Why)
+## Subcommands
 
-| Problem in v1 | Fix in v2 |
+### `syncript init`
+
+Creates a `.syncript` YAML configuration file in the current directory.
+
+```bash
+syncript init [options]
+
+Options:
+  --local PATH        Local root directory (default: current directory)
+  --remote PATH       Remote path (relative to --base-remote, or absolute)
+  --server HOST       SSH server hostname or IP
+  --port N            SSH port (default: 22)
+  --base-remote PATH  Base remote path prepended to relative remote roots
+  --profile NAME      Profile name (default: "default")
+  --force             Overwrite an existing .syncript
+  -n, --dry-run       Preview without writing files
+  -v, --verbose       Show extra output
+```
+
+**Example — non-interactive:**
+```bash
+syncript init \
+  --server myhost.com \
+  --port 22 \
+  --remote projects/myrepo \
+  --base-remote /home/user \
+  --profile default
+```
+
+**Example — interactive** (prompts for missing values):
+```bash
+syncript init --server myhost.com
+# Remote path (relative to base_remote): projects/myrepo
+```
+
+`.syncript` will be created with content similar to:
+
+```yaml
+# .syncript — syncript project configuration
+profiles:
+  - name: default
+    server: "myhost.com"
+    port: 22
+    local_root: "/path/to/your/project"
+    remote_root: "projects/myrepo"
+defaults:
+  base_remote: "/home/user"
+  server: "myhost.com"
+  port: 22
+```
+
+---
+
+### `syncript sync`
+
+Runs a bidirectional sync using the nearest `.syncript` config file found by searching upward from the current directory.
+
+```bash
+syncript sync [options]
+
+Options:
+  --profile NAME      Profile to use (default: "default")
+  -n, --dry-run       Preview without applying changes
+  -v, --verbose       Show every file evaluated, not just actions
+  -f, --force         Ignore state + progress cache (full rescan)
+  --push-only         Only local → remote
+  --pull-only         Only remote → local
+  --poll-interval N   Seconds between remote-scan polls (default: 5)
+  --poll-timeout N    Max seconds to wait for remote scan (default: 120)
+```
+
+**How `.syncript` discovery works:** syncript searches the current directory, then each parent directory in turn until it finds a `.syncript` file or reaches the filesystem root. This means you can run `syncript sync` from any subdirectory of your project.
+
+---
+
+### `syncript status`
+
+Shows current sync metadata without running a sync.
+
+```bash
+syncript status [--profile NAME] [-v]
+```
+
+Output example:
+```
+Profile : default
+Local   : /path/to/your/project
+Remote  : user@myhost.com:22:/home/user/projects/myrepo
+Tracked : 247 file(s)
+
+No in-progress sync session.
+```
+
+---
+
+## Config File Schema (YAML)
+
+Both the global config (`~/.config/syncript/config.yaml`) and the project config (`.syncript`) use the same YAML schema:
+
+```yaml
+# Multiple profiles are supported
+profiles:
+  - name: default
+    server: "example.com"
+    port: 22
+    local_root: "./"
+    remote_root: "projects/myrepo"   # relative to defaults.base_remote
+
+  - name: staging
+    server: "staging.example.com"
+    port: 2222
+    local_root: "./"
+    remote_root: "/absolute/remote/path"   # absolute path — base_remote not applied
+
+defaults:
+  base_remote: "/home/user"   # prepended to relative remote_root during init
+  server: "example.com"
+  port: 22
+```
+
+**Field descriptions:**
+
+| Field | Description |
 |---|---|
-| Remote scan = N SFTP round-trips (one per directory) | One `find` command, result polled from a temp file |
-| MD5 comparison = reading every remote file byte | mtime + size comparison only — zero remote reads |
-| One drop kills everything, no recovery | Checkpoint file — resume from exact last position |
-| Files sent one-by-one over SFTP | tar+gzip batching — N files = 1 TCP transfer |
-| No retry on flaky connections | Retry-with-backoff decorator on every remote call |
-| SSH channel dies on long transfers | Keep-alive every 30s + auto-reconnect |
+| `profiles[].name` | Profile identifier; select with `--profile NAME` |
+| `profiles[].server` | SSH server hostname or IP |
+| `profiles[].port` | SSH port |
+| `profiles[].local_root` | Local directory to sync |
+| `profiles[].remote_root` | Remote path (absolute, or relative to `defaults.base_remote`) |
+| `defaults.base_remote` | Base path on remote, prepended to relative `remote_root` values |
+| `defaults.server` | Default server used during `syncript init` |
+| `defaults.port` | Default port used during `syncript init` |
+
+---
+
+## SSH Authentication
+
+syncript uses your **ssh-agent** or `~/.ssh/id_*` keys automatically via `paramiko`.
+
+**Setup (one time):**
+```bash
+# Generate a key
+ssh-keygen -t ed25519 -C "syncript"
+
+# Copy to remote
+ssh-copy-id user@yourserver.com
+
+# Test
+ssh user@yourserver.com
+```
+
+**Troubleshooting:**
+- `Permission denied`: check `~/.ssh` permissions on the remote (`chmod 700 ~/.ssh`, `chmod 600 ~/.ssh/authorized_keys`).
+- `Connection refused`: verify the server address and port.
+- Key not picked up: run `ssh-add ~/.ssh/id_ed25519`.
 
 ---
 
 ## How It Works (in order)
 
 ```
-1. Fire `nohup find … > /tmp/sync_scan_<UUID>.tsv &`  on remote
+1. Fire `nohup find … > /tmp/sync_scan_<UUID>.tsv.gz &` on remote
          └─ runs in background, survives SSH drop
 2. Scan local files (while remote is running)
 3. Poll the remote temp file every 5s until "SCAN_DONE" appears
@@ -63,14 +261,13 @@ python -m syncript
 | ✅ changed | ✅ changed | recorded | **CONFLICT** |
 | ✅ unchanged | ✅ unchanged | recorded | **SKIP** |
 
-"Changed" = mtime differs by > 2s **or** size differs.  No MD5 needed.
+"Changed" = mtime differs by > 3 min **or** size differs. No MD5 needed.
 
 ---
 
 ## Checkpoint / Resume
 
-A `.sync_progress.json` file is written to your local root during every sync.
-It records which files have been pushed/pulled in the current session.
+A `.sync_progress.json` file is written to your local root during every sync. It records which files have been pushed/pulled in the current session.
 
 If the connection dies mid-sync:
 - Next run detects the progress file and **skips already-transferred files**
@@ -95,7 +292,7 @@ When both sides changed since the last sync:
 
 ---
 
-## Options
+## Options Reference
 
 | Flag | Description |
 |------|-------------|
@@ -109,18 +306,18 @@ When both sides changed since the last sync:
 
 ---
 
-## SSH Authentication
+## Uninstall
 
-The script uses your **ssh-agent** or `~/.ssh/id_*` keys automatically.
-
-For a specific key, set at the top of `sync.py`:
-```python
-SSH_KEY_PATH = r"C:\Users\bs\.ssh\id_rsa"
+### Unix
+```bash
+./install-unix.sh --uninstall
 ```
+This removes `~/.local/bin/syncript` and the PATH line from your shell profile.
+Config files in `~/.config/syncript/` are **not** removed (delete manually if desired).
 
-For password auth (not recommended):
-```python
-SSH_PASSWORD = "your_password"
+### Windows
+```powershell
+.\install-windows.ps1 -Uninstall
 ```
 
 ---
@@ -129,42 +326,24 @@ SSH_PASSWORD = "your_password"
 
 | File | Purpose |
 |------|---------|
-| `.sync_state.json` | Records last-synced mtime+size per file. Safe to delete (triggers full rescan on next run). |
+| `.syncript` | Per-project sync configuration (profiles) |
+| `~/.config/syncript/config.yaml` | Global defaults used by `syncript init` |
+| `.sync_state.csv` | Records last-synced mtime+size per file. Safe to delete. |
 | `.sync_progress.json` | Checkpoint for current session. Auto-deleted on clean finish. |
-| `/tmp/sync_scan_<UUID>.tsv` | Temporary remote scan output. Auto-deleted after reading. |
-| `/tmp/sync_push_<UUID>.tar.gz` | Temporary upload bundle. Auto-deleted after extraction. |
-| `/tmp/sync_pull_<UUID>.tar.gz` | Temporary download bundle. Auto-deleted after extraction. |
+| `/tmp/sync_scan_<UUID>.tsv.gz` | Temporary remote scan output. Auto-deleted. |
+| `/tmp/sync_push_<UUID>.tar.gz` | Temporary upload bundle. Auto-deleted. |
+| `/tmp/sync_pull_<UUID>.tar.gz` | Temporary download bundle. Auto-deleted. |
 | `*.remote.TIMESTAMP.conflict` | Remote version of a conflicting file. |
 | `*.TIMESTAMP.conflict-info` | Human-readable conflict explanation. |
 
 Add to `.gitignore`:
 ```
-.sync_state.json
+.syncript
+.sync_state.csv
 .sync_progress.json
 *.conflict
 *.conflict-info
 ```
-
----
-
-## Remote Scan Internals
-
-The remote scan command is:
-```bash
-nohup sh -c '
-  find /root/projects/jibit/cloud \
-    \( -name "*.jar" -prune \) -o \( -name "node_modules" -prune \) -o ... \
-    -type f -printf "%P\t%T@\t%s\n" 2>/dev/null \
-    | awk -F"\t" '{if ($1 != "") print $0}' \
-    > /tmp/sync_scan_abc123.tsv \
-    && echo SCAN_DONE >> /tmp/sync_scan_abc123.tsv
-' >/dev/null 2>&1 &
-```
-
-- `nohup … &` — detached process, survives SSH disconnect
-- `-printf "%P\t%T@\t%s\n"` — relative path, mtime epoch (float), size — **no extra stat calls**
-- `SCAN_DONE` sentinel — tells the client the file is complete, not half-written
-- UUID in filename — safe for concurrent runs, easy to clean up
 
 ---
 
@@ -173,10 +352,25 @@ nohup sh -c '
 `run_sync.bat`:
 ```bat
 @echo off
-cd /d C:\Users\bs\projects\jibit\cloud
-python C:\path\to\sync.py >> sync.log 2>&1
+cd /d C:\Users\bs\projects\myrepo
+syncript sync >> sync.log 2>&1
 ```
 
-Schedule every 5–10 minutes in Task Scheduler.  Consecutive runs are safe —
+Schedule every 5–10 minutes in Task Scheduler. Consecutive runs are safe —
 if one is still running when the next fires, the second will just find nothing
 to do (or resume if the first crashed).
+
+---
+
+## Performance Improvements over v1
+
+| Problem in v1 | Fix in v2 |
+|---|---|
+| Remote scan = N SFTP round-trips (one per directory) | One `find` command, result polled from a temp file |
+| MD5 comparison = reading every remote file byte | mtime + size comparison only — zero remote reads |
+| One drop kills everything, no recovery | Checkpoint file — resume from exact last position |
+| Files sent one-by-one over SFTP | tar+gzip batching — N files = 1 TCP transfer |
+| No retry on flaky connections | Retry-with-backoff decorator on every remote call |
+| SSH channel dies on long transfers | Keep-alive every 30s + auto-reconnect |
+| Hardcoded paths — one user only | YAML config + profiles — fully generalised |
+

@@ -8,7 +8,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from ..core.ssh_manager import SSHManager
-from ..config import LOCAL_ROOT, REMOTE_ROOT, REMOTE_TMP, SSH_HOST, SSH_PORT, SSH_USER
+from .. import config as _cfg
 from ..utils.logging import log, warn, vlog
 from ..utils.file_utils import _md5_local
 
@@ -24,7 +24,7 @@ def check_existing_conflicts(dry_run: bool) -> bool:
     Never touches the remote side.
     """
     conflict_files = sorted(
-        p for p in LOCAL_ROOT.rglob("*")
+        p for p in _cfg.LOCAL_ROOT.rglob("*")
         if ".conflict" in p.name and p.is_file()
     )
     if not conflict_files:
@@ -33,7 +33,7 @@ def check_existing_conflicts(dry_run: bool) -> bool:
     print()
     warn(f"Found {len(conflict_files)} unresolved conflict file(s):")
     for p in conflict_files:
-        print(f"    {p.relative_to(LOCAL_ROOT)}")
+        print(f"    {p.relative_to(_cfg.LOCAL_ROOT)}")
     print()
     print("  [c] Remove all conflict files and CONTINUE syncing")
     print("  [r] Remove all conflict files and EXIT")
@@ -85,12 +85,12 @@ def save_conflict(mgr: SSHManager, rel: str, local_path: Path,
         return
 
     # ── Download remote file for comparison ─────────────────────────────────
-    remote_tar = f"{REMOTE_TMP}/sync_conflict_{uuid.uuid4().hex}.tar.gz"
+    remote_tar = f"{_cfg.REMOTE_TMP}/sync_conflict_{uuid.uuid4().hex}.tar.gz"
     tmp_tar = Path(tempfile.mktemp(suffix=".tar.gz"))
     remote_bytes: bytes = b""
     try:
         pack_cmd = (
-            f"cd '{REMOTE_ROOT}' && "
+            f"cd '{_cfg.REMOTE_ROOT}' && "
             f"tar czf '{remote_tar}' --no-recursion '{rel}' 2>&1"
         )
         mgr.exec(pack_cmd, timeout=30)
@@ -130,7 +130,7 @@ def save_conflict(mgr: SSHManager, rel: str, local_path: Path,
         f"{'─' * 60}\n"
         f"  File   : {rel}\n"
         f"  Local  : {local_path}\n"
-        f"  Remote : {SSH_USER}@{SSH_HOST}:{SSH_PORT}:{remote_path}\n"
+        f"  Remote : {_cfg.SSH_USER}@{_cfg.SSH_HOST}:{_cfg.SSH_PORT}:{remote_path}\n"
         f"\n"
         f"Conflict reason:\n"
         f"  {reason_line}\n"
