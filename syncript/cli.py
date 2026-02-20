@@ -108,10 +108,104 @@ def cmd_init(args):
     if args.dry_run:
         print(f"[dry-run] Would write {target}:")
         print(content)
+        # Show .stignore that would be created
+        stignore_path = Path.cwd() / ".stignore"
+        stignore_content = """# File extensions
+**/*.jar
+**/*.xlsx
+**/*.zip
+**/*.iml
+**/*.swp
+**/*.log
+*.xlsx
+*.zip
+*.csv
+*.iml
+*.swp
+*.conflict
+*.conflict-info
+*.log
+
+# Directories (prune entire trees)
+**/node_modules/**
+**/target/**
+temp/**
+.idea/**
+.stfolder/**
+
+# Sync metadata
+.sync_state.sync-conflict-*.json
+.sync_state.json
+.sync_progress.json
+
+
+.vscode/**
+
+.DS_Store
+__pycache__/**
+tests/__pycache__/**
+**/*.pyc
+.pytest_cache/**
+"""
+        if not stignore_path.exists():
+            print(f"[dry-run] Would write {stignore_path}:")
+            print(stignore_content)
+        else:
+            if args.verbose:
+                print(f"{stignore_path} already exists; would not overwrite.")
         return
 
     target.write_text(content, encoding="utf-8")
     print(f"Created {target}")
+
+    # Create a .stignore file in the project root if it does not already exist
+    stignore_path = Path.cwd() / ".stignore"
+    stignore_content = """# File extensions
+**/*.jar
+**/*.xlsx
+**/*.zip
+**/*.iml
+**/*.swp
+**/*.log
+*.xlsx
+*.zip
+*.csv
+*.iml
+*.swp
+*.conflict
+*.conflict-info
+*.log
+
+# Directories (prune entire trees)
+**/node_modules/**
+**/target/**
+temp/**
+.idea/**
+.stfolder/**
+
+# Sync metadata
+.sync_state.sync-conflict-*.json
+.sync_state.json
+.sync_progress.json
+
+
+.vscode/**
+
+.DS_Store
+__pycache__/**
+tests/__pycache__/**
+**/*.pyc
+.pytest_cache/**
+"""
+    if not stignore_path.exists():
+        stignore_path.write_text(stignore_content, encoding="utf-8")
+        print(f"Created {stignore_path}")
+        if args.verbose:
+            print(stignore_content)
+    else:
+        if args.verbose:
+            print(f"{stignore_path} already exists; not modified.")
+
     if args.verbose:
         print(content)
 
