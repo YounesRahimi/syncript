@@ -4,7 +4,7 @@ File utilities (MD5, comparison)
 import hashlib
 from pathlib import Path
 from typing import Optional, TYPE_CHECKING
-from ..config import MTIME_TOLERANCE
+from .. import config as _cfg
 
 if TYPE_CHECKING:
     from ..core.ssh_manager import SSHManager
@@ -32,4 +32,4 @@ def _file_changed(new_mtime: float, new_size: int,
     if old_mtime is None:
         return True
     mtime_diff = abs(new_mtime - old_mtime)
-    return mtime_diff > MTIME_TOLERANCE or new_size != old_size
+    return mtime_diff > _cfg.MTIME_TOLERANCE or new_size != old_size

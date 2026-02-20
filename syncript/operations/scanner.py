@@ -7,7 +7,7 @@ import uuid
 import gzip
 from pathlib import Path
 from ..core.ssh_manager import SSHManager
-from ..config import LOCAL_ROOT, REMOTE_ROOT, REMOTE_TMP, STATE_FILE, PROGRESS_FILE, STIGNORE_FILE
+from .. import config as _cfg
 from ..utils.logging import log, vlog
 from ..utils.ignore_patterns import is_ignored, _stignore_to_find_prunes
 
@@ -21,12 +21,12 @@ def start_remote_scan(mgr: SSHManager, patterns: list) -> str:
     and then download & decompress the gz on the local side.
     """
     scan_id = uuid.uuid4().hex
-    marker_file = f"{REMOTE_TMP}/sync_scan_{scan_id}.done"
-    remote_gz = f"{REMOTE_TMP}/sync_scan_{scan_id}.tsv.gz"
-    prune_expr = _stignore_to_find_prunes(LOCAL_ROOT)
+    marker_file = f"{_cfg.REMOTE_TMP}/sync_scan_{scan_id}.done"
+    remote_gz = f"{_cfg.REMOTE_TMP}/sync_scan_{scan_id}.tsv.gz"
+    prune_expr = _stignore_to_find_prunes(_cfg.LOCAL_ROOT)
 
     # find outputs: rel_path \t mtime_epoch \t size
-    remote_root_str = str(REMOTE_ROOT)
+    remote_root_str = str(_cfg.REMOTE_ROOT)
 
     # Use nohup + sh so it survives even if our SSH channel drops.
     # Pipe through gzip to produce a compressed TSV, then write a small
@@ -117,7 +117,7 @@ def _parse_scan_output(content: str) -> dict[str, tuple[float, int]]:
 def local_list_all(root: Path, patterns: list) -> dict[str, tuple[float, int]]:
     """Returns {rel_posix: (mtime, size)}"""
     result: dict[str, tuple[float, int]] = {}
-    skip_names = {STATE_FILE.name, PROGRESS_FILE.name, STIGNORE_FILE}
+    skip_names = {_cfg.get_state_file().name, _cfg.get_progress_file().name, Path(_cfg.STIGNORE_FILE).name}
     for p in root.rglob("*"):
         if p.is_dir():
             continue

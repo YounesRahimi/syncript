@@ -3,7 +3,7 @@ Ignore patterns handling (.stignore file parsing)
 """
 import re
 from pathlib import Path
-from ..config import STIGNORE_FILE
+from .. import config as _cfg
 
 
 def _compile_pattern(raw: str):
@@ -26,7 +26,7 @@ def _compile_pattern(raw: str):
 
 def load_ignore_patterns(root: Path) -> list:
     """Load ignore patterns from .stignore file"""
-    f = root / STIGNORE_FILE
+    f = root / _cfg.STIGNORE_FILE
     if not f.exists():
         return []
     patterns = []
@@ -58,7 +58,7 @@ def _stignore_to_find_prunes(root: Path) -> str:
     Patterns with a leading slash or other complex forms are skipped here and
     handled by the client-side is_ignored() filter that runs after the scan.
     """
-    f = root / STIGNORE_FILE
+    f = root / _cfg.STIGNORE_FILE
     if not f.exists():
         return ""
 

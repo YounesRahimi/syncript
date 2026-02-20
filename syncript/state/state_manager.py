@@ -4,7 +4,7 @@ State file management (persistent across runs)
 import json
 import csv
 import io
-from ..config import STATE_FILE
+from ..config import get_state_file
 from ..utils.logging import warn
 
 
@@ -19,11 +19,11 @@ def load_state() -> dict:
       - If file starts with '{' -> treat as legacy JSON and parse via json.loads
       - Otherwise treat as CSV with header: rel,lmtime,lsize,rmtime,rsize
     """
-    if not STATE_FILE.exists():
+    if not get_state_file().exists():
         return {}
 
     try:
-        text = STATE_FILE.read_text("utf-8")
+        text = get_state_file().read_text("utf-8")
     except Exception:
         return {}
 
@@ -79,7 +79,7 @@ def save_state(state: dict):
     Header: rel,lmtime,lsize,rmtime,rsize
     """
     try:
-        with STATE_FILE.open("w", newline="", encoding="utf-8") as f:
+        with get_state_file().open("w", newline="", encoding="utf-8") as f:
             writer = csv.writer(f)
             writer.writerow(["rel", "lmtime", "lsize", "rmtime", "rsize"])
             for rel in sorted(state.keys()):

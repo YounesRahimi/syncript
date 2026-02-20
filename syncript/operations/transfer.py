@@ -9,7 +9,7 @@ import uuid
 import base64
 from pathlib import Path
 from ..core.ssh_manager import SSHManager
-from ..config import LOCAL_ROOT, REMOTE_ROOT, REMOTE_TMP
+from .. import config as _cfg
 from ..utils.logging import log
 from ..state.state_manager import save_state
 from ..state.progress_manager import save_progress
@@ -29,7 +29,7 @@ def push_batch(mgr: SSHManager, files: list[tuple[str, Path]],
         return
 
     tmp_tar = Path(tempfile.mktemp(suffix=".tar.gz"))
-    remote_tar = f"{REMOTE_TMP}/sync_push_{uuid.uuid4().hex}.tar.gz"
+    remote_tar = f"{_cfg.REMOTE_TMP}/sync_push_{uuid.uuid4().hex}.tar.gz"
 
     try:
         # ── Pack ────────────────────────────────────────────────────────────
@@ -46,7 +46,7 @@ def push_batch(mgr: SSHManager, files: list[tuple[str, Path]],
 
         # ── Extract on remote ───────────────────────────────────────────────
         extract_cmd = (
-            f"cd '{REMOTE_ROOT}' && "
+            f"cd '{_cfg.REMOTE_ROOT}' && "
             f"tar xzf '{remote_tar}' --no-same-owner 2>&1"
         )
         log(f"  [PUSH] extracting on remote …")
@@ -85,13 +85,13 @@ def pull_batch(mgr: SSHManager, files: list[str],
             log(f"  [PULL-DRY] {rel}")
         return
 
-    remote_tar = f"{REMOTE_TMP}/sync_pull_{uuid.uuid4().hex}.tar.gz"
+    remote_tar = f"{_cfg.REMOTE_TMP}/sync_pull_{uuid.uuid4().hex}.tar.gz"
     tmp_tar = Path(tempfile.mktemp(suffix=".tar.gz"))
 
     try:
         # ── Pack on remote ──────────────────────────────────────────────────
         # Build a null-delimited file list to avoid shell quoting issues
-        file_list_remote = f"{REMOTE_TMP}/sync_filelist_{uuid.uuid4().hex}.txt"
+        file_list_remote = f"{_cfg.REMOTE_TMP}/sync_filelist_{uuid.uuid4().hex}.txt"
         file_list_content = "\n".join(files)
 
         log(f"  [PULL] requesting remote to pack {len(files)} file(s) …")
@@ -100,7 +100,7 @@ def pull_batch(mgr: SSHManager, files: list[str],
         _write_remote_file(mgr, file_list_remote, file_list_content)
 
         pack_cmd = (
-            f"cd '{REMOTE_ROOT}' && "
+            f"cd '{_cfg.REMOTE_ROOT}' && "
             f"tar czf '{remote_tar}' --no-recursion -T '{file_list_remote}' "
             f"--ignore-failed-read 2>&1"
         )
@@ -115,7 +115,7 @@ def pull_batch(mgr: SSHManager, files: list[str],
         # ── Extract locally ─────────────────────────────────────────────────
         with tarfile.open(tmp_tar, "r:gz") as tar:
             for member in tar.getmembers():
-                dest = LOCAL_ROOT / member.name
+                dest = _cfg.LOCAL_ROOT / member.name
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 with tar.extractfile(member) as src_f, open(dest, "wb") as dst_f:
                     shutil.copyfileobj(src_f, dst_f)
@@ -126,7 +126,7 @@ def pull_batch(mgr: SSHManager, files: list[str],
 
         # ── Checkpoint ──────────────────────────────────────────────────────
         for rel in files:
-            lpath = LOCAL_ROOT / rel
+            lpath = _cfg.LOCAL_ROOT / rel
             if lpath.exists():
                 st = lpath.stat()
                 rmtime, rsize = remote_meta.get(rel, (st.st_mtime, st.st_size))
