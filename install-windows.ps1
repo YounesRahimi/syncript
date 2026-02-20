@@ -109,7 +109,7 @@ if (-not (Test-Path $SourcePy)) {
 
 # ── Install dependencies ──────────────────────────────────────────────────────
 
-Write-Info "Installing Python dependencies (paramiko, pyyaml) …"
+Write-Info "Installing Python dependencies (paramiko, pyyaml) … "
 & $python -m pip install --quiet --user paramiko pyyaml
 
 # ── Create install directory ──────────────────────────────────────────────────
@@ -204,7 +204,7 @@ defaults:
 # ── SSH guidance ──────────────────────────────────────────────────────────────
 
 Write-Host ""
-Write-Host "── SSH Setup ────────────────────────────────────────────────────────────" -ForegroundColor Cyan
+Write-Host "== SSH Setup ============================================================" -ForegroundColor Cyan
 Write-Host "  If you haven't set up SSH key authentication yet:" -ForegroundColor Cyan
 Write-Host ""
 Write-Host "  1. Generate a key (skip if you already have one):"
@@ -223,7 +223,7 @@ Write-Host "    - Permission denied: ensure ~/.ssh on remote has chmod 700 and"
 Write-Host "      authorized_keys has chmod 600."
 Write-Host "    - Connection refused: check the server address and port."
 Write-Host "    - Key not used: run ssh-add to load it into ssh-agent."
-Write-Host "─────────────────────────────────────────────────────────────────────────" -ForegroundColor Cyan
+Write-Host "=========================================================================" -ForegroundColor Cyan
 Write-Host ""
 
 # ── Done ──────────────────────────────────────────────────────────────────────
