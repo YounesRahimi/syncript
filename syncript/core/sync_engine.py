@@ -14,7 +14,7 @@ from ..operations.scanner import start_remote_scan, poll_remote_scan, local_list
 from ..operations.transfer import push_batch, pull_batch
 from ..operations.delete import delete_remote, _confirm_deletions_by_leaf
 from ..operations.conflict import check_existing_conflicts, save_conflict
-from ..state.state_manager import load_state, save_state
+from ..state.state_manager import load_state, save_state, load_skipped_deletions, save_skipped_deletions, remove_skipped_deletions
 from ..state.progress_manager import load_progress, save_progress, clear_progress
 
 BATCH_SIZE = 100  # max files per tar batch
@@ -25,7 +25,8 @@ def decide(local_files: dict[str, tuple[float, int]],
            state: dict,
            progress: dict,
            push_only: bool,
-           pull_only: bool) -> dict:
+           pull_only: bool,
+           skipped_deletions: set = None) -> dict:
     """
     Returns a plan:
     {
@@ -41,6 +42,9 @@ def decide(local_files: dict[str, tuple[float, int]],
     done_pull = set(progress.get("pulled", []))
     done_del_r = set(progress.get("deleted_r", []))
     done_del_l = set(progress.get("deleted_l", []))
+
+    if skipped_deletions is None:
+        skipped_deletions = set()
 
     # conflicts entries are (rel, reason_str) tuples
     plan = dict(to_push=[], to_pull=[], to_delete_r=[], to_delete_l=[],
@@ -67,8 +71,10 @@ def decide(local_files: dict[str, tuple[float, int]],
         if l_meta and not r_meta:
             if prev_rmtime is not None and rel not in done_del_l:
                 # Was synced before, now missing on remote → remote deleted it
-                if not pull_only:
+                if not pull_only and rel not in skipped_deletions:
                     plan["to_delete_l"].append(rel)
+                elif rel in skipped_deletions:
+                    vlog(f"  [SKIP-DEL] {rel} (user skipped deletion)")
             else:
                 # New local file
                 if not pull_only and rel not in done_push:
@@ -79,8 +85,10 @@ def decide(local_files: dict[str, tuple[float, int]],
         if r_meta and not l_meta:
             if prev_lmtime is not None and rel not in done_del_r:
                 # Was synced before, now missing locally → local deleted it
-                if not push_only:
+                if not push_only and rel not in skipped_deletions:
                     plan["to_delete_r"].append(rel)
+                elif rel in skipped_deletions:
+                    vlog(f"  [SKIP-DEL] {rel} (user skipped deletion)")
             else:
                 # New remote file
                 if not push_only and rel not in done_pull:
@@ -160,6 +168,7 @@ def run_sync(dry_run=False, verbose=False, force=False,
 
     state = {} if force else load_state()
     progress = {} if force else load_progress()
+    skipped_deletions = set() if force else load_skipped_deletions()
 
     if progress and not force:
         pushed_n = len(progress.get("pushed", []))
@@ -213,7 +222,7 @@ def run_sync(dry_run=False, verbose=False, force=False,
 
         # ── 4. Decide what to do ───────────────────────────────────────────
         plan = decide(local_files, remote_files, state, progress,
-                      push_only, pull_only)
+                      push_only, pull_only, skipped_deletions)
 
         # Exclude .git entries from deletion plans so they are not counted or acted on.
         filtered_del_r = [
@@ -250,6 +259,10 @@ def run_sync(dry_run=False, verbose=False, force=False,
                 batch = plan["to_push"][i:i + BATCH_SIZE]
                 log(f"[push] Batch {i // BATCH_SIZE + 1}: {len(batch)} file(s)")
                 push_batch(mgr, batch, dry_run, state, progress)
+            # Files now exist on remote — remove from skipped-deletions if present
+            pushed_rels = [rel for rel, _ in plan["to_push"]]
+            remove_skipped_deletions(pushed_rels)
+            skipped_deletions -= set(pushed_rels)
 
         # ── 6. Execute: pull in batches ─────────────────────────────────────
         if plan["to_pull"]:
@@ -258,17 +271,31 @@ def run_sync(dry_run=False, verbose=False, force=False,
                 batch = plan["to_pull"][i:i + BATCH_SIZE]
                 log(f"[pull] Batch {i // BATCH_SIZE + 1}: {len(batch)} file(s)")
                 pull_batch(mgr, batch, dry_run, state, progress, remote_files)
+            # Files now exist locally — remove from skipped-deletions if present
+            remove_skipped_deletions(plan["to_pull"])
+            skipped_deletions -= set(plan["to_pull"])
 
         # ── 7. Deletions ────────────────────────────────────────────────────
         if filtered_del_r:
             log(f"[del] Deleting {n_del_r} file(s) from remote …")
-            delete_remote(mgr, filtered_del_r, dry_run, state, progress)
+            confirmed_r = delete_remote(mgr, filtered_del_r, dry_run, state, progress)
+            if not dry_run and confirmed_r is not None:
+                declined_r = set(filtered_del_r) - set(confirmed_r)
+                if declined_r:
+                    skipped_deletions.update(declined_r)
+                    save_skipped_deletions(skipped_deletions)
 
         if filtered_del_l and not dry_run:
             confirmed_local = _confirm_deletions_by_leaf(filtered_del_l, context="local")
             if confirmed_local is None:
                 log("Local deletions skipped by user.")
+                skipped_deletions.update(filtered_del_l)
+                save_skipped_deletions(skipped_deletions)
             else:
+                declined_l = set(filtered_del_l) - set(confirmed_local)
+                if declined_l:
+                    skipped_deletions.update(declined_l)
+                    save_skipped_deletions(skipped_deletions)
                 for rel in confirmed_local:
                     lpath = _cfg.LOCAL_ROOT / rel
                     lpath.unlink(missing_ok=True)

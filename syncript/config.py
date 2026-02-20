@@ -47,6 +47,11 @@ def get_progress_file() -> Path:
     return LOCAL_ROOT / ".sync_progress.json"
 
 
+def get_skipped_deletions_file() -> Path:
+    """Return the skipped-deletions file path based on the current LOCAL_ROOT."""
+    return LOCAL_ROOT / ".sync_skipped_deletions.json"
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 #  GLOBAL CONFIG FILE  ── $XDG_CONFIG_HOME/syncript/config.yaml
 # ══════════════════════════════════════════════════════════════════════════════

@@ -71,23 +71,27 @@ def _confirm_deletions_by_leaf(rel_paths: list[str], *, context: str = "remote")
 
 
 def delete_remote(mgr: SSHManager, rel_paths: list[str],
-                  dry_run: bool, state: dict, prog: dict):
-    """Delete files on remote with user confirmation"""
+                  dry_run: bool, state: dict, prog: dict) -> Optional[list[str]]:
+    """Delete files on remote with user confirmation.
+
+    Returns the list of rel paths that were confirmed for deletion,
+    None if the user aborted, or an empty list if nothing was confirmed.
+    """
     if not rel_paths:
-        return
+        return []
     if dry_run:
         for rel in rel_paths:
             log(f"  [DEL-REMOTE-DRY] {rel}")
-        return
+        return []
 
     # Ask user per-leaf-directory which files to actually delete.
     confirmed = _confirm_deletions_by_leaf(rel_paths, context="remote")
     if confirmed is None:
         log("Remote deletions skipped by user.")
-        return
+        return None
     if not confirmed:
         log("No remote deletions confirmed.")
-        return
+        return []
 
     # Batch delete with one `rm` command for the confirmed set
     quoted = " ".join(f"'{_cfg.REMOTE_ROOT}/{r}'" for r in confirmed)
@@ -102,13 +106,18 @@ def delete_remote(mgr: SSHManager, rel_paths: list[str],
         save_state(state)
     except Exception as exc:
         warn(f"Batch remote delete failed: {exc}; will try one-by-one")
+        actually_deleted = []
         for rel in confirmed:
             try:
                 mgr.sftp_remove(f"{_cfg.REMOTE_ROOT}/{rel}")
                 state.pop(rel, None)
                 prog.setdefault("deleted_r", []).append(rel)
                 log(f"  [DEL-REMOTE ✓] {rel}")
+                actually_deleted.append(rel)
             except Exception as e2:
                 warn(f"  could not delete remote {rel}: {e2}")
         save_progress(prog)
         save_state(state)
+        return actually_deleted
+
+    return confirmed

@@ -4,7 +4,7 @@ State file management (persistent across runs)
 import json
 import csv
 import io
-from ..config import get_state_file
+from ..config import get_state_file, get_skipped_deletions_file
 from ..utils.logging import warn
 
 
@@ -99,3 +99,34 @@ def save_state(state: dict):
     except Exception:
         # Best effort: don't crash the sync if state save fails
         warn("Failed to save state file (CSV).")
+
+
+def load_skipped_deletions() -> set:
+    """Load the set of rel paths the user chose not to delete."""
+    f = get_skipped_deletions_file()
+    if not f.exists():
+        return set()
+    try:
+        data = json.loads(f.read_text("utf-8"))
+        return set(data.get("skipped", []))
+    except Exception:
+        return set()
+
+
+def save_skipped_deletions(skipped: set):
+    """Persist the skipped-deletions set."""
+    try:
+        get_skipped_deletions_file().write_text(
+            json.dumps({"skipped": sorted(skipped)}, indent=2), "utf-8"
+        )
+    except Exception:
+        warn("Failed to save skipped deletions file.")
+
+
+def remove_skipped_deletions(rel_paths: list):
+    """Remove entries from the skipped-deletions set (e.g. file reappeared)."""
+    if not rel_paths:
+        return
+    skipped = load_skipped_deletions()
+    skipped -= set(rel_paths)
+    save_skipped_deletions(skipped)

@@ -34,3 +34,4 @@ __pycache__/**
 tests/__pycache__/**
 **/*.pyc
 .pytest_cache/**
+.sync_skipped_deletions.json

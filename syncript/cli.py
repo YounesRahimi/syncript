@@ -44,14 +44,36 @@ def cmd_init(args):
     # Resolve remote root
     remote_root = args.remote
     if not remote_root:
-        if sys.stdin.isatty():
-            default_rr = Path.cwd().name
-            prompt_hint = f" [{default_rr}]" if default_rr else ""
-            remote_root = input(f"Remote path (relative to base_remote){prompt_hint}: ").strip()
-            if not remote_root:
-                remote_root = default_rr
+        # Build a smarter default: base_remote + cwd-relative-path-without-home-prefix
+        base_remote = args.base_remote or g_defaults.get("base_remote", "")
+        cwd = Path.cwd().expanduser().resolve()
+        home = Path.home().expanduser().resolve()
+        # Compute path of cwd with the home prefix removed when possible
+        try:
+            if cwd.parts[: len(home.parts)] == home.parts:
+                rel_parts = cwd.parts[len(home.parts):]
+            else:
+                # Not under home: drop root/drive component (first part) to mimic "path without leading root"
+                rel_parts = cwd.parts[1:] if len(cwd.parts) > 1 else cwd.parts
+        except Exception:
+            rel_parts = cwd.parts[1:] if len(cwd.parts) > 1 else cwd.parts
+
+        rel_path_posix = Path(*rel_parts).as_posix() if rel_parts else cwd.name
+        if not rel_path_posix:
+            rel_path_posix = cwd.name
+
+        if base_remote:
+            # Combine base_remote and the relative path (ensure single slash)
+            default_rr = f"{str(base_remote).rstrip('/')}/{rel_path_posix}"
         else:
-            remote_root = Path.cwd().name
+            default_rr = rel_path_posix
+
+        if sys.stdin.isatty():
+            prompt_hint = f" [{default_rr}]" if default_rr else ""
+            entered = input(f"Remote path (relative to base_remote){prompt_hint}: ").strip()
+            remote_root = entered if entered else default_rr
+        else:
+            remote_root = default_rr
 
     if not remote_root:
         print("error: remote path is required.", file=sys.stderr)
@@ -152,6 +174,7 @@ temp/**
 .sync_state.sync-conflict-*.json
 .sync_state.json
 .sync_progress.json
+.sync_skipped_deletions.json
 
 
 .vscode/**
@@ -202,6 +225,7 @@ temp/**
 .sync_state.sync-conflict-*.json
 .sync_state.json
 .sync_progress.json
+.sync_skipped_deletions.json
 
 
 .vscode/**
