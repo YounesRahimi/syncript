@@ -12,7 +12,7 @@ from typing import Optional
 
 SSH_HOST = "example.com"
 SSH_PORT = 22
-SSH_USER = "user"
+SSH_USER = "root"
 # Path to your private key, or None to use ssh-agent / ~/.ssh/id_*
 SSH_KEY_PATH: Optional[str] = None  # e.g. r"C:\Users\bs\.ssh\id_rsa"
 SSH_PASSWORD: Optional[str] = None  # only if you use password auth
@@ -150,6 +150,8 @@ def apply_profile(profile: dict):
         SSH_PORT = int(profile["port"])
     if "user" in profile:
         SSH_USER = str(profile["user"])
+    elif "username" in profile:
+        SSH_USER = str(profile["username"])
     if "ssh_key" in profile:
         SSH_KEY_PATH = str(profile["ssh_key"]) if profile["ssh_key"] else None
     if "ssh_password" in profile:

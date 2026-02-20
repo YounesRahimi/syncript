@@ -131,11 +131,18 @@ python "%~dp0syncript_run.py" %*
 "@ | Set-Content -Path $WrapperCmd -Encoding ASCII
     Write-Info "Created $WrapperCmd"
 
-    # Python runner
+    # Python runner — embeds the repo source path so the syncript package is always found
+    $escapedScriptDir = $ScriptDir.Replace("\", "\\")
     @"
 #!/usr/bin/env python3
 """syncript CLI wrapper — installed by install-windows.ps1"""
 import sys
+
+# Ensure the syncript package (installed from source) is importable
+_src = r"$escapedScriptDir"
+if _src not in sys.path:
+    sys.path.insert(0, _src)
+
 from syncript.cli import main
 sys.exit(main() or 0)
 "@ | Set-Content -Path $WrapperPy -Encoding UTF8

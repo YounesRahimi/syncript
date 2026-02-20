@@ -172,6 +172,21 @@ def run_sync(dry_run=False, verbose=False, force=False,
     mgr = SSHManager()
     mgr.connect()
 
+    # Ensure remote root exists before doing any remote operations.
+    # Respect dry-run: only log the action when dry_run is True.
+    try:
+        if dry_run:
+            vlog(f"[remote] DRY-RUN: would run mkdir -p '{_cfg.REMOTE_ROOT}' on server")
+        else:
+            mkdir_cmd = f"mkdir -p '{_cfg.REMOTE_ROOT}'"
+            log(f"[remote] Ensuring remote root exists: {_cfg.REMOTE_ROOT}")
+            mgr.exec(mkdir_cmd, timeout=30)
+            vlog(f"[remote] ensured remote root exists: {_cfg.REMOTE_ROOT}")
+    except Exception as exc:
+        warn(f"Failed to ensure remote root {_cfg.REMOTE_ROOT}: {exc}")
+        # Surface failure so sync aborts cleanly and progress/state is preserved by outer handler
+        raise
+
     scan_file = None
     try:
         # ── 1. Fire remote scan (async — runs on server) ───────────────────
@@ -196,7 +211,7 @@ def run_sync(dry_run=False, verbose=False, force=False,
         }
         log(f"[scan] {len(remote_files)} remote file(s) after filtering")
 
-        # ── 4. Decide what to do ────────────────────────────────────────────
+        # ── 4. Decide what to do ───────────────────────────────────────────
         plan = decide(local_files, remote_files, state, progress,
                       push_only, pull_only)
 

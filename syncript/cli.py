@@ -64,6 +64,13 @@ def cmd_init(args):
         if val:
             server = val
 
+    # Resolve user
+    user = args.user or g_defaults.get("user", "root")
+    if not args.user and sys.stdin.isatty():
+        val = input(f"SSH user [{user}]: ").strip()
+        if val:
+            user = val
+
     # Resolve port
     port = args.port or int(g_defaults.get("port", 22))
     if not args.port and sys.stdin.isatty():
@@ -80,6 +87,13 @@ def cmd_init(args):
 
     profile_name = args.profile or "default"
 
+    def _yq(value: str) -> str:
+        """Wrap a string in YAML single quotes, escaping embedded single quotes."""
+        return "'" + value.replace("'", "''") + "'"
+
+    # Always use forward slashes in paths to avoid YAML backslash escape issues
+    local_root_yaml = local_root.replace("\\", "/")
+
     lines = [
         "# .syncript — syncript project configuration",
         "# Author: Younes Rahimi",
@@ -89,17 +103,18 @@ def cmd_init(args):
         "# remote_root is relative to defaults.base_remote when it does not start with '/'.",
         "profiles:",
         f"  - name: {profile_name}",
-        f"    server: \"{server}\"",
+        f"    server: {_yq(server)}",
         f"    port: {port}",
-        f"    local_root: \"{local_root}\"",
-        f"    remote_root: \"{remote_root}\"",
+        f"    user: {_yq(user)}",
+        f"    local_root: {_yq(local_root_yaml)}",
+        f"    remote_root: {_yq(remote_root)}",
     ]
 
     if base_remote:
         lines += [
             "defaults:",
-            f"  base_remote: \"{base_remote}\"",
-            f"  server: \"{server}\"",
+            f"  base_remote: {_yq(base_remote)}",
+            f"  server: {_yq(server)}",
             f"  port: {port}",
         ]
 
@@ -310,6 +325,8 @@ def main():
                         help="Remote root path (relative to base_remote or absolute)")
     init_p.add_argument("--server", metavar="HOST",
                         help="Remote server hostname or IP")
+    init_p.add_argument("--user", metavar="NAME",
+                        help="SSH username (default: root)")
     init_p.add_argument("--port", type=int, metavar="N",
                         help="SSH port (default: 22)")
     init_p.add_argument("--base-remote", metavar="PATH",
