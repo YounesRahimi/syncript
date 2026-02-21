@@ -127,9 +127,9 @@ def local_list_all(root: Path, patterns: list) -> dict[str, tuple[float, int]]:
         if ".conflict" in p.name:
             continue
         rel = p.relative_to(root).as_posix()
-        # Always exclude .git directory contents (mirrors remote scan behaviour)
-        if rel == ".git" or rel.startswith(".git/"):
-            continue
+        # # Always exclude .git directory contents (mirrors remote scan behaviour)
+        # if rel == ".git" or rel.startswith(".git/"):
+        #     continue
         if is_ignored(rel, patterns):
             continue
         st = p.stat()
