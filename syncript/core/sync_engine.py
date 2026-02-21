@@ -20,6 +20,11 @@ from ..state.progress_manager import load_progress, save_progress, clear_progres
 BATCH_SIZE = 100  # max files per tar batch
 
 
+def _is_git_path(rel: str) -> bool:
+    """Return True if *rel* is a .git directory entry (top-level or nested)."""
+    return rel == ".git" or rel.startswith(".git/") or "/.git/" in rel or rel.endswith("/.git")
+
+
 def decide(local_files: dict[str, tuple[float, int]],
            remote_files: dict[str, tuple[float, int]],
            state: dict,
@@ -225,14 +230,8 @@ def run_sync(dry_run=False, verbose=False, force=False,
                       push_only, pull_only, skipped_deletions)
 
         # Exclude .git entries from deletion plans so they are not counted or acted on.
-        filtered_del_r = [
-            r for r in plan["to_delete_r"]
-            if "/.git/" not in r and not r.endswith("/.git")
-        ]
-        filtered_del_l = [
-            r for r in plan["to_delete_l"]
-            if "/.git/" not in r and not r.endswith("/.git")
-        ]
+        filtered_del_r = [r for r in plan["to_delete_r"] if not _is_git_path(r)]
+        filtered_del_l = [r for r in plan["to_delete_l"] if not _is_git_path(r)]
 
         n_push = len(plan["to_push"])
         n_pull = len(plan["to_pull"])
