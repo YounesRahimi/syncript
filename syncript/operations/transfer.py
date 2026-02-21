@@ -16,17 +16,18 @@ from ..state.progress_manager import save_progress
 
 
 def push_batch(mgr: SSHManager, files: list[tuple[str, Path]],
-               dry_run: bool, state: dict, prog: dict):
+               dry_run: bool, state: dict, prog: dict) -> tuple[int, int]:
     """
     Push a list of (rel_path, local_Path) to remote as one tar.gz.
     Each successfully transferred file is immediately checkpointed.
+    Returns (compressed_bytes, uncompressed_bytes) for adaptive batch sizing.
     """
     if not files:
-        return
+        return 0, 0
     if dry_run:
         for rel, _ in files:
             log(f"  [PUSH-DRY] {rel}")
-        return
+        return 0, 0
 
     tmp_tar = Path(tempfile.mktemp(suffix=".tar.gz"))
     remote_tar = f"{_cfg.REMOTE_TMP}/sync_push_{uuid.uuid4().hex}.tar.gz"
@@ -34,10 +35,16 @@ def push_batch(mgr: SSHManager, files: list[tuple[str, Path]],
     try:
         # ── Pack ────────────────────────────────────────────────────────────
         log(f"  [PUSH] packing {len(files)} file(s) into {tmp_tar.name} …")
+        uncompressed = 0
         with tarfile.open(tmp_tar, "w:gz", compresslevel=6) as tar:
             for rel, lpath in files:
                 tar.add(str(lpath), arcname=rel)
-        size_kb = tmp_tar.stat().st_size // 1024
+                try:
+                    uncompressed += lpath.stat().st_size
+                except OSError:
+                    pass
+        compressed = tmp_tar.stat().st_size
+        size_kb = compressed // 1024
         log(f"  [PUSH] packed → {size_kb} KB")
 
         # ── Upload ──────────────────────────────────────────────────────────
@@ -63,6 +70,7 @@ def push_batch(mgr: SSHManager, files: list[tuple[str, Path]],
             log(f"  [PUSH ✓] {rel}")
         save_progress(prog)
         save_state(state)
+        return compressed, uncompressed
 
     finally:
         tmp_tar.unlink(missing_ok=True)
@@ -74,16 +82,17 @@ def push_batch(mgr: SSHManager, files: list[tuple[str, Path]],
 
 def pull_batch(mgr: SSHManager, files: list[str],
                dry_run: bool, state: dict, prog: dict,
-               remote_meta: dict[str, tuple[float, int]]):
+               remote_meta: dict[str, tuple[float, int]]) -> tuple[int, int]:
     """
     Pull a list of rel_paths from remote as one tar.gz.
+    Returns (compressed_bytes, uncompressed_bytes) for adaptive batch sizing.
     """
     if not files:
-        return
+        return 0, 0
     if dry_run:
         for rel in files:
             log(f"  [PULL-DRY] {rel}")
-        return
+        return 0, 0
 
     remote_tar = f"{_cfg.REMOTE_TMP}/sync_pull_{uuid.uuid4().hex}.tar.gz"
     tmp_tar = Path(tempfile.mktemp(suffix=".tar.gz"))
@@ -109,7 +118,8 @@ def pull_batch(mgr: SSHManager, files: list[str],
         # ── Download ────────────────────────────────────────────────────────
         log(f"  [PULL] downloading …")
         mgr.sftp_get(remote_tar, str(tmp_tar))
-        size_kb = tmp_tar.stat().st_size // 1024
+        compressed = tmp_tar.stat().st_size
+        size_kb = compressed // 1024
         log(f"  [PULL] downloaded {size_kb} KB, extracting …")
 
         # ── Extract locally ─────────────────────────────────────────────────
@@ -125,10 +135,12 @@ def pull_batch(mgr: SSHManager, files: list[str],
                     os.utime(dest, (rmt, rmt))
 
         # ── Checkpoint ──────────────────────────────────────────────────────
+        uncompressed = 0
         for rel in files:
             lpath = _cfg.LOCAL_ROOT / rel
             if lpath.exists():
                 st = lpath.stat()
+                uncompressed += st.st_size
                 rmtime, rsize = remote_meta.get(rel, (st.st_mtime, st.st_size))
                 state[rel] = {
                     "lmtime": st.st_mtime, "lsize": st.st_size,
@@ -138,6 +150,7 @@ def pull_batch(mgr: SSHManager, files: list[str],
                 log(f"  [PULL ✓] {rel}")
         save_progress(prog)
         save_state(state)
+        return compressed, uncompressed
 
     finally:
         tmp_tar.unlink(missing_ok=True)

@@ -17,7 +17,67 @@ from ..operations.conflict import check_existing_conflicts, save_conflict
 from ..state.state_manager import load_state, save_state, load_skipped_deletions, save_skipped_deletions, remove_skipped_deletions
 from ..state.progress_manager import load_progress, save_progress, clear_progress
 
-BATCH_SIZE = 100  # max files per tar batch
+# File extensions that compress well (text/source files).
+# Binary/media/archive extensions are treated as incompressible.
+_TEXT_EXTENSIONS = frozenset({
+    ".py", ".js", ".ts", ".jsx", ".tsx", ".html", ".htm", ".css", ".scss",
+    ".sass", ".txt", ".md", ".rst", ".json", ".yaml", ".yml", ".xml",
+    ".toml", ".ini", ".cfg", ".conf", ".env", ".sql", ".sh", ".bash",
+    ".zsh", ".java", ".go", ".c", ".cpp", ".h", ".hpp", ".cs", ".rs",
+    ".rb", ".php", ".swift", ".kt", ".scala", ".r", ".m", ".lua", ".pl",
+    ".ex", ".exs", ".vb", ".groovy", ".tf", ".hcl", ".dockerfile",
+    ".properties", ".gradle", ".pom",
+})
+
+
+def _estimate_compressed_size(rel: str, raw_size: int, ratio: float | None) -> int:
+    """Estimate compressed size (bytes) of *rel* with *raw_size* uncompressed bytes.
+
+    If *ratio* (compressed/uncompressed from a previous batch) is available it
+    is used directly; otherwise a heuristic is applied:
+      - text/source files → 10 % of raw size  (compresses ~90 %)
+      - binary/media files → 90 % of raw size  (compresses ~10 %)
+    """
+    if ratio is not None:
+        return max(1, int(raw_size * ratio))
+    from pathlib import Path as _Path
+    ext = _Path(rel).suffix.lower()
+    r = 0.10 if ext in _TEXT_EXTENSIONS else 0.90
+    return max(1, int(raw_size * r))
+
+
+def _make_size_batches(
+    files: list,
+    sizes: dict,
+    batch_file_size: int,
+    ratio: float | None = None,
+) -> list:
+    """Split *files* into batches whose estimated compressed size ≤ *batch_file_size*.
+
+    *files* may be a list of ``(rel, path)`` tuples (push) or plain ``rel``
+    strings (pull).  *sizes* maps ``rel → raw_bytes``.
+    Single files that exceed the limit are placed in their own batch.
+    """
+    batches: list = []
+    current: list = []
+    current_est = 0
+
+    for f in files:
+        rel = f[0] if isinstance(f, tuple) else f
+        raw = sizes.get(rel, 0)
+        est = _estimate_compressed_size(rel, raw, ratio)
+        if current and current_est + est > batch_file_size:
+            batches.append(current)
+            current = [f]
+            current_est = est
+        else:
+            current.append(f)
+            current_est += est
+
+    if current:
+        batches.append(current)
+
+    return batches
 
 
 def _is_git_path(rel: str) -> bool:
@@ -253,11 +313,23 @@ def run_sync(dry_run=False, verbose=False, force=False,
 
         # ── 5. Execute: push in batches ─────────────────────────────────────
         if plan["to_push"]:
-            log(f"[push] Pushing {n_push} file(s) in batches of {BATCH_SIZE} …")
-            for i in range(0, n_push, BATCH_SIZE):
-                batch = plan["to_push"][i:i + BATCH_SIZE]
-                log(f"[push] Batch {i // BATCH_SIZE + 1}: {len(batch)} file(s)")
-                push_batch(mgr, batch, dry_run, state, progress)
+            local_sizes = {rel: local_files[rel][1] for rel, _ in plan["to_push"] if rel in local_files}
+            push_ratio: float | None = None
+            remaining_push = list(plan["to_push"])
+            batch_num = 0
+            log(f"[push] Pushing {n_push} file(s) "
+                f"(target ≤ {_cfg.BATCH_FILE_SIZE // 1024} KB compressed per batch) …")
+            while remaining_push:
+                push_batches = _make_size_batches(remaining_push, local_sizes, _cfg.BATCH_FILE_SIZE, push_ratio)
+                if not push_batches:
+                    break
+                batch = push_batches[0]
+                remaining_push = remaining_push[len(batch):]
+                batch_num += 1
+                log(f"[push] Batch {batch_num}: {len(batch)} file(s)")
+                compressed, uncompressed = push_batch(mgr, batch, dry_run, state, progress)
+                if not dry_run and uncompressed > 0:
+                    push_ratio = compressed / uncompressed
             # Files now exist on remote — remove from skipped-deletions if present
             pushed_rels = [rel for rel, _ in plan["to_push"]]
             remove_skipped_deletions(pushed_rels)
@@ -265,11 +337,23 @@ def run_sync(dry_run=False, verbose=False, force=False,
 
         # ── 6. Execute: pull in batches ─────────────────────────────────────
         if plan["to_pull"]:
-            log(f"[pull] Pulling {n_pull} file(s) in batches of {BATCH_SIZE} …")
-            for i in range(0, n_pull, BATCH_SIZE):
-                batch = plan["to_pull"][i:i + BATCH_SIZE]
-                log(f"[pull] Batch {i // BATCH_SIZE + 1}: {len(batch)} file(s)")
-                pull_batch(mgr, batch, dry_run, state, progress, remote_files)
+            remote_sizes = {rel: remote_files[rel][1] for rel in plan["to_pull"] if rel in remote_files}
+            pull_ratio: float | None = None
+            remaining_pull = list(plan["to_pull"])
+            batch_num = 0
+            log(f"[pull] Pulling {n_pull} file(s) "
+                f"(target ≤ {_cfg.BATCH_FILE_SIZE // 1024} KB compressed per batch) …")
+            while remaining_pull:
+                pull_batches = _make_size_batches(remaining_pull, remote_sizes, _cfg.BATCH_FILE_SIZE, pull_ratio)
+                if not pull_batches:
+                    break
+                batch = pull_batches[0]
+                remaining_pull = remaining_pull[len(batch):]
+                batch_num += 1
+                log(f"[pull] Batch {batch_num}: {len(batch)} file(s)")
+                compressed, uncompressed = pull_batch(mgr, batch, dry_run, state, progress, remote_files)
+                if not dry_run and uncompressed > 0:
+                    pull_ratio = compressed / uncompressed
             # Files now exist locally — remove from skipped-deletions if present
             remove_skipped_deletions(plan["to_pull"])
             skipped_deletions -= set(plan["to_pull"])

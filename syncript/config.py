@@ -32,6 +32,11 @@ RETRY_BASE_DELAY = 2.0  # seconds; doubles each attempt
 # mtime tolerance (seconds) — 3 min covers FAT/NTFS granularity + minor clock skew
 MTIME_TOLERANCE = 180
 
+# Maximum compressed size (bytes) per tar.gz batch (push or pull).
+# Files are accumulated until the estimated compressed size reaches this limit.
+# Default: 512 KB
+BATCH_FILE_SIZE = 512 * 1024
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  DYNAMIC PATHS  ── computed from LOCAL_ROOT at call time
@@ -144,10 +149,11 @@ def apply_profile(profile: dict):
     """
     Apply a profile dict to the module-level config variables.
     Supports keys: server, port, user, ssh_key, local_root, remote_root,
-                   base_remote (prepended to remote_root if remote_root is relative).
+                   base_remote (prepended to remote_root if remote_root is relative),
+                   batch_file_size (max compressed bytes per tar.gz batch).
     """
     global SSH_HOST, SSH_PORT, SSH_USER, SSH_KEY_PATH, SSH_PASSWORD
-    global LOCAL_ROOT, REMOTE_ROOT
+    global LOCAL_ROOT, REMOTE_ROOT, BATCH_FILE_SIZE
 
     if "server" in profile:
         SSH_HOST = str(profile["server"])
@@ -169,3 +175,5 @@ def apply_profile(profile: dict):
         if base and not rr.startswith("/"):
             rr = f"{base}/{rr}"
         REMOTE_ROOT = PurePosixPath(rr)
+    if "batch_file_size" in profile:
+        BATCH_FILE_SIZE = int(profile["batch_file_size"])

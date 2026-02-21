@@ -477,5 +477,116 @@ class TestGitExclusion(unittest.TestCase):
             self.assertIn(np, filtered, f"Non-.git path should pass: {np}")
 
 
+# ── Tests: BATCH_FILE_SIZE batching ──────────────────────────────────────────
+
+class TestBatchFileSizeConfig(unittest.TestCase):
+    """Tests for BATCH_FILE_SIZE constant and apply_profile support."""
+
+    def setUp(self):
+        import syncript.config as cfg
+        self._orig = cfg.BATCH_FILE_SIZE
+
+    def tearDown(self):
+        import syncript.config as cfg
+        cfg.BATCH_FILE_SIZE = self._orig
+
+    def test_default_batch_file_size(self):
+        """BATCH_FILE_SIZE default is 512 KB."""
+        import syncript.config as cfg
+        self.assertEqual(cfg.BATCH_FILE_SIZE, 512 * 1024)
+
+    def test_apply_profile_sets_batch_file_size(self):
+        """apply_profile honours batch_file_size key."""
+        import syncript.config as cfg
+        cfg.apply_profile({"batch_file_size": 1024 * 1024})
+        self.assertEqual(cfg.BATCH_FILE_SIZE, 1024 * 1024)
+
+    def test_init_includes_batch_file_size(self):
+        """'syncript init' writes batch_file_size into the generated .syncript."""
+        tmpdir = tempfile.TemporaryDirectory()
+        try:
+            cwd = Path(tmpdir.name)
+            rc, out, err = run_syncript(
+                "init",
+                "--server", "host.example.com",
+                "--remote", "projects/test",
+                cwd=cwd,
+            )
+            self.assertEqual(rc, 0, msg=f"stderr: {err}")
+            content = (cwd / ".syncript").read_text(encoding="utf-8")
+            self.assertIn("batch_file_size", content)
+            self.assertIn("524288", content)  # 512 * 1024
+        finally:
+            tmpdir.cleanup()
+
+
+class TestMakeSizeBatches(unittest.TestCase):
+    """Tests for _make_size_batches and _estimate_compressed_size helpers."""
+
+    def test_single_batch_when_below_limit(self):
+        """All small files fit in one batch."""
+        from syncript.core.sync_engine import _make_size_batches
+        files = [("a.py", "pa"), ("b.py", "pb"), ("c.py", "pc")]
+        sizes = {"a.py": 1000, "b.py": 1000, "c.py": 1000}
+        batches = _make_size_batches(files, sizes, 512 * 1024)
+        self.assertEqual(len(batches), 1)
+        self.assertEqual(len(batches[0]), 3)
+
+    def test_splits_into_multiple_batches(self):
+        """Large files are split across batches when limit is small."""
+        from syncript.core.sync_engine import _make_size_batches
+        # Binary files: ratio 0.9, so each 600 KB binary → ~540 KB compressed
+        # With a 512 KB limit, each file gets its own batch
+        files = ["a.bin", "b.bin", "c.bin"]
+        sizes = {"a.bin": 600 * 1024, "b.bin": 600 * 1024, "c.bin": 600 * 1024}
+        batches = _make_size_batches(files, sizes, 512 * 1024)
+        self.assertEqual(len(batches), 3)
+
+    def test_text_files_compress_well(self):
+        """Text files estimated at 10 % allow many files per batch."""
+        from syncript.core.sync_engine import _make_size_batches
+        # Each .py file: 100 KB raw → ~10 KB estimated compressed
+        # 512 KB limit should hold ~51 files
+        files = [(f"f{i}.py", f"p{i}") for i in range(60)]
+        sizes = {f"f{i}.py": 100 * 1024 for i in range(60)}
+        batches = _make_size_batches(files, sizes, 512 * 1024)
+        # Should be 2 batches (51 in first, 9 in second)
+        self.assertGreater(len(batches), 1)
+        self.assertLess(len(batches), 60)
+
+    def test_oversized_single_file_gets_own_batch(self):
+        """A file larger than the limit still gets its own batch."""
+        from syncript.core.sync_engine import _make_size_batches
+        files = ["huge.bin", "small.py"]
+        sizes = {"huge.bin": 10 * 1024 * 1024, "small.py": 1024}
+        batches = _make_size_batches(files, sizes, 512 * 1024)
+        self.assertGreaterEqual(len(batches), 1)
+        self.assertIn("huge.bin", batches[0])
+
+    def test_adaptive_ratio_used_when_provided(self):
+        """When ratio is provided, it overrides the heuristic."""
+        from syncript.core.sync_engine import _estimate_compressed_size
+        # .py would normally be 0.10; override with 0.5
+        est = _estimate_compressed_size("file.py", 1000, ratio=0.5)
+        self.assertEqual(est, 500)
+
+    def test_heuristic_text_extension(self):
+        """Text extensions get 0.10 compression ratio by default."""
+        from syncript.core.sync_engine import _estimate_compressed_size
+        est = _estimate_compressed_size("hello.py", 1000, ratio=None)
+        self.assertEqual(est, 100)  # 10% of 1000
+
+    def test_heuristic_binary_extension(self):
+        """Binary extensions get 0.90 compression ratio by default."""
+        from syncript.core.sync_engine import _estimate_compressed_size
+        est = _estimate_compressed_size("photo.jpg", 1000, ratio=None)
+        self.assertEqual(est, 900)  # 90% of 1000
+
+    def test_empty_files_list(self):
+        """Empty input produces empty output."""
+        from syncript.core.sync_engine import _make_size_batches
+        self.assertEqual(_make_size_batches([], {}, 512 * 1024), [])
+
+
 if __name__ == "__main__":
     unittest.main()

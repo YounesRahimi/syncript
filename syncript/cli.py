@@ -130,6 +130,7 @@ def cmd_init(args):
         f"    user: {_yq(user)}",
         f"    local_root: {_yq(local_root_yaml)}",
         f"    remote_root: {_yq(remote_root)}",
+        f"    batch_file_size: {_cfg.BATCH_FILE_SIZE}",
     ]
 
     if base_remote:
