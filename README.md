@@ -231,6 +231,94 @@ ssh user@yourserver.com
 - `Connection refused`: verify the server address and port.
 - Key not picked up: run `ssh-add ~/.ssh/id_ed25519`.
 
+### Windows: Permission errors with ~/.ssh\config and PowerShell fix
+
+If Windows reports permission issues when SSH reads `~/.ssh\config` (errors mentioning icacls, access denied, or inheritance), fix ownership and ACLs from an elevated PowerShell prompt (Run as Administrator). Replace the path/user as needed.
+
+PowerShell example:
+```powershell
+# 1. Take ownership of the file
+takeown /f "${env:USERPROFILE}\.ssh\config"
+
+# 2. Reset the permissions to remove inherited ones
+icacls "${env:USERPROFILE}\.ssh\config" /reset
+
+# 3. Give your user Full Control
+icacls "${env:USERPROFILE}\.ssh\config" /grant:r "${env:USERNAME}:F"
+
+# 4. Remove inherited ACEs so only explicit ACLs remain
+icacls "${env:USERPROFILE}\.ssh\config" /inheritance:r
+
+# 5. Verify ACLs
+icacls "${env:USERPROFILE}\.ssh\config"
+```
+
+Notes:
+- Run PowerShell as Administrator.
+- If the problematic file is a private key (e.g. `id_rsa`), apply the same steps to that file.
+- On Unix/macOS ensure private keys are 600 and the .ssh dir is 700:
+  ```bash
+  chmod 700 ~/.ssh
+  chmod 600 ~/.ssh/id_sync       # private key
+  chmod 644 ~/.ssh/id_sync.pub   # public key
+  ```
+
+### Generating a new SSH key when one already exists
+
+If you already have SSH keys in `~/.ssh` but want a dedicated key for this project (recommended to avoid clobbering existing keys), generate a new keypair with a custom filename, register the public key with your Git/remote provider, and configure SSH to use it for the project's host.
+
+Linux / macOS (bash):
+```bash
+# generate a new keypair with a custom name
+ssh-keygen -t ed25519 -C "syncript" -f ~/.ssh/id_syncript
+
+# start ssh-agent and add the key
+eval "$(ssh-agent -s)"
+ssh-add ~/.ssh/id_syncript
+
+# set strict permissions
+chmod 700 ~/.ssh
+chmod 600 ~/.ssh/id_syncript
+chmod 644 ~/.ssh/id_syncript.pub
+```
+
+Windows (PowerShell):
+```powershell
+# generate a new keypair (PowerShell may prompt)
+ssh-keygen -t ed25519 -C "syncript" -f $env:USERPROFILE\.ssh\id_syncript
+
+# enable/start the OpenSSH authentication agent and add the key
+Start-Service ssh-agent
+ssh-add $env:USERPROFILE\.ssh\id_syncript
+
+# set ACLs if needed (replace with your username)
+icacls $env:USERPROFILE\.ssh\id_syncript /inheritance:r
+icacls $env:USERPROFILE\.ssh\id_syncript /grant:r "${env:USERNAME}:F"
+```
+
+Configure ~/.ssh/config to tie the new key to the host (change HostName/User as appropriate):
+
+```text
+Host syncript
+  HostName git.example.com
+  User git
+  IdentityFile ~/.ssh/id_syncript
+  IdentitiesOnly yes
+```
+
+On Windows, use the expanded path if required:
+```text
+Host syncript
+  HostName git.example.com
+  User git
+  IdentityFile C:\Users\bs\.ssh\id_syncript
+  IdentitiesOnly yes
+```
+
+Finally:
+- Upload the contents of `~/.ssh/id_syncript.pub` to your Git/remote account (GitHub/GitLab/Bitbucket).
+- Test connection: `ssh -T syncript` (or `ssh -vT syncript` for verbose output).
+
 ---
 
 ## How It Works (in order)
@@ -373,4 +461,3 @@ to do (or resume if the first crashed).
 | No retry on flaky connections | Retry-with-backoff decorator on every remote call |
 | SSH channel dies on long transfers | Keep-alive every 30s + auto-reconnect |
 | Hardcoded paths — one user only | YAML config + profiles — fully generalised |
-
