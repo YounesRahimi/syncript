@@ -393,5 +393,89 @@ class TestInstallerIdempotency(unittest.TestCase):
         self.assertEqual(result.returncode, 0, msg=result.stderr)
 
 
+# ── Tests: .git exclusion ─────────────────────────────────────────────────────
+
+class TestGitExclusion(unittest.TestCase):
+    """Tests that .git directory contents are excluded from local scan and deletion plans."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmpdir.name)
+
+    def tearDown(self):
+        self.tmpdir.cleanup()
+
+    def test_local_list_all_excludes_git_files(self):
+        """local_list_all must not return any .git/** entries."""
+        from syncript.operations.scanner import local_list_all
+        import syncript.config as cfg
+
+        old_root = cfg.LOCAL_ROOT
+        cfg.LOCAL_ROOT = self.root
+        try:
+            (self.root / "normal.txt").write_text("hello", encoding="utf-8")
+            git_dir = self.root / ".git"
+            git_dir.mkdir()
+            (git_dir / "config").write_text("[core]", encoding="utf-8")
+            (git_dir / "HEAD").write_text("ref: refs/heads/main", encoding="utf-8")
+            objects_dir = git_dir / "objects"
+            objects_dir.mkdir()
+            (objects_dir / "abc123").write_text("blob", encoding="utf-8")
+
+            result = local_list_all(self.root, [])
+
+            self.assertIn("normal.txt", result)
+            git_keys = [k for k in result if k == ".git" or k.startswith(".git/")]
+            self.assertEqual(git_keys, [], f"Unexpected .git entries: {git_keys}")
+        finally:
+            cfg.LOCAL_ROOT = old_root
+
+    def test_is_git_path_top_level(self):
+        """_is_git_path returns True for top-level .git entries."""
+        from syncript.core.sync_engine import _is_git_path
+        self.assertTrue(_is_git_path(".git"))
+        self.assertTrue(_is_git_path(".git/config"))
+        self.assertTrue(_is_git_path(".git/HEAD"))
+        self.assertTrue(_is_git_path(".git/objects/ab/cdef1234"))
+
+    def test_is_git_path_nested(self):
+        """_is_git_path returns True for nested .git paths."""
+        from syncript.core.sync_engine import _is_git_path
+        self.assertTrue(_is_git_path("subdir/.git"))
+        self.assertTrue(_is_git_path("subdir/.git/config"))
+        self.assertTrue(_is_git_path("a/b/.git/HEAD"))
+
+    def test_is_git_path_non_git(self):
+        """_is_git_path returns False for normal paths."""
+        from syncript.core.sync_engine import _is_git_path
+        self.assertFalse(_is_git_path("src/main.py"))
+        self.assertFalse(_is_git_path("mygitrepo/file.txt"))
+        self.assertFalse(_is_git_path("README.md"))
+
+    def test_run_sync_git_filter_excludes_deletion(self):
+        """The safety filter in run_sync must exclude all .git path shapes."""
+        from syncript.core.sync_engine import _is_git_path
+
+        git_paths = [
+            ".git/config",
+            ".git/HEAD",
+            ".git/objects/ab/cdef1234",
+            "subdir/.git/config",
+            "subdir/.git",
+        ]
+        non_git_paths = [
+            "src/main.py",
+            "mygitrepo/file.txt",
+        ]
+
+        all_paths = git_paths + non_git_paths
+        filtered = [r for r in all_paths if not _is_git_path(r)]
+
+        for gp in git_paths:
+            self.assertNotIn(gp, filtered, f".git path should be filtered: {gp}")
+        for np in non_git_paths:
+            self.assertIn(np, filtered, f"Non-.git path should pass: {np}")
+
+
 if __name__ == "__main__":
     unittest.main()
