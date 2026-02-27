@@ -5,9 +5,10 @@ syncript  —  Unstable-connection-tolerant bidirectional SSH sync
 Author: Younes Rahimi
 
 Subcommands:
-  init    Create a .syncript config file in the current directory.
-  sync    Run a bidirectional sync using the nearest .syncript config.
-  status  Show pending changes and last sync time from sync metadata.
+  init      Create a .syncript config file in the current directory.
+  sync      Run a bidirectional sync using the nearest .syncript config.
+  status    Show pending changes and last sync time from sync metadata.
+  copilot   Run the copilot CLI on the remote server and stream its output.
 
 Run 'syncript <subcommand> --help' for more details.
 """
@@ -326,6 +327,31 @@ def cmd_status(args):
         print("\nNo in-progress sync session.")
 
 
+# ── copilot ───────────────────────────────────────────────────────────────────
+
+def cmd_copilot(args):
+    """Dispatch copilot sub-subcommands."""
+    from syncript.copilot_cmd import run_copilot, list_logs, view_log, stop_copilot
+
+    sub = getattr(args, "copilot_sub", None)
+
+    if sub == "logs":
+        session_id = getattr(args, "session_id", None)
+        if session_id:
+            view_log(session_id, verbose=args.verbose)
+        else:
+            list_logs(verbose=args.verbose)
+    elif sub == "stop":
+        stop_copilot(args.session_id, verbose=args.verbose)
+    else:
+        # Default: run copilot with forwarded args
+        run_copilot(
+            extra_args=args.copilot_args,
+            model=args.model,
+            verbose=args.verbose,
+        )
+
+
 # ── main ──────────────────────────────────────────────────────────────────────
 
 def main():
@@ -401,6 +427,37 @@ def main():
     status_p.add_argument("-n", "--dry-run", action="store_true",
                           help="(no-op for status, kept for consistency)")
 
+    # ── copilot ───────────────────────────────────────────────────────────────
+    copilot_p = subparsers.add_parser(
+        "copilot",
+        help="Run the copilot CLI on the remote server",
+        description="Execute copilot on the remote server asynchronously and stream its output.",
+    )
+    copilot_p.add_argument("--profile", metavar="NAME", default="default",
+                           help="Profile to use (default: default)")
+    copilot_p.add_argument("-v", "--verbose", action="store_true",
+                           help="Show extra output")
+    copilot_p.add_argument("--model", metavar="MODEL", default=None,
+                           help="Model for copilot (default: claude-sonnet-4.6)")
+
+    copilot_sub = copilot_p.add_subparsers(dest="copilot_sub", metavar="ACTION")
+
+    # copilot logs [session-id]
+    logs_p = copilot_sub.add_parser("logs", help="List or view copilot session logs")
+    logs_p.add_argument("session_id", nargs="?", metavar="SESSION_ID",
+                        help="Session ID to view (omit to list all)")
+    logs_p.add_argument("-v", "--verbose", action="store_true", help="Show extra output")
+
+    # copilot stop <session-id>
+    stop_p = copilot_sub.add_parser("stop", help="Stop a running copilot session")
+    stop_p.add_argument("session_id", metavar="SESSION_ID",
+                        help="Session ID to stop")
+    stop_p.add_argument("-v", "--verbose", action="store_true", help="Show extra output")
+
+    # Remaining args forwarded to copilot on the server
+    copilot_p.add_argument("copilot_args", nargs=argparse.REMAINDER,
+                           help="Arguments forwarded to the copilot command on the server")
+
     args = parser.parse_args()
 
     if args.command == "init":
@@ -411,6 +468,8 @@ def main():
         cmd_sync(args)
     elif args.command == "status":
         cmd_status(args)
+    elif args.command == "copilot":
+        cmd_copilot(args)
     else:
         parser.print_help()
         sys.exit(1)
