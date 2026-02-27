@@ -70,6 +70,20 @@ def _ensure_logs_dir(ssh: SSHManager):
     ssh.exec(f"mkdir -p {REMOTE_LOGS_DIR}", timeout=15)
 
 
+def _transfer_prompt_file(ssh: SSHManager, remote_cwd: str):
+    """Upload .copilot.prompt.md from the local cwd to the remote cwd, if present."""
+    local_prompt = Path.cwd() / ".copilot.prompt.md"
+    if not local_prompt.exists():
+        return
+    remote_prompt = f"{remote_cwd}/.copilot.prompt.md"
+    try:
+        ssh.exec(f"mkdir -p {remote_cwd}", timeout=15)
+        ssh.sftp_put(str(local_prompt), remote_prompt)
+        log(f"[copilot] transferred {local_prompt.name} → {remote_prompt}")
+    except Exception as exc:
+        warn(f"[copilot] could not transfer .copilot.prompt.md: {exc}")
+
+
 def _cleanup_old_logs(ssh: SSHManager):
     """Delete log files older than LOG_RETENTION_DAYS on the remote server."""
     try:
@@ -178,6 +192,9 @@ def run_copilot(extra_args: list, model=None, autopilot: bool = False, verbose: 
     ssh.connect()
     _ensure_logs_dir(ssh)
     _cleanup_old_logs(ssh)
+
+    # Transfer .copilot.prompt.md to remote cwd if it exists locally
+    _transfer_prompt_file(ssh, remote_cwd)
 
     # Print the command being executed on the remote server
     print(f"[copilot] executing on remote server:\n  {copilot_cmd}\n")
