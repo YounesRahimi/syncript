@@ -335,7 +335,18 @@ def cmd_copilot(args):
 
     sub = getattr(args, "copilot_sub", None)
 
-    if sub == "logs":
+    if sub == "run":
+        resume = getattr(args, "resume", None)
+        if resume:
+            resume_copilot(resume, verbose=args.verbose)
+        else:
+            run_copilot(
+                extra_args=args.copilot_args,
+                model=args.model,
+                autopilot=args.autopilot,
+                verbose=args.verbose,
+            )
+    elif sub == "logs":
         session_id = getattr(args, "session_id", None)
         if session_id:
             view_log(session_id, verbose=args.verbose)
@@ -344,17 +355,10 @@ def cmd_copilot(args):
     elif sub == "stop":
         stop_copilot(args.session_id, verbose=args.verbose)
     else:
-        resume = getattr(args, "resume", None)
-        if resume:
-            resume_copilot(resume, verbose=args.verbose)
-        else:
-            # Default: run copilot with forwarded args
-            run_copilot(
-                extra_args=args.copilot_args,
-                model=args.model,
-                autopilot=args.autopilot,
-                verbose=args.verbose,
-            )
+        # No subcommand — print help
+        print("error: a subcommand is required (run, logs, stop).", file=sys.stderr)
+        print("Run 'syncript copilot --help' for usage.", file=sys.stderr)
+        sys.exit(1)
 
 
 # ── main ──────────────────────────────────────────────────────────────────────
@@ -435,21 +439,31 @@ def main():
     # ── copilot ───────────────────────────────────────────────────────────────
     copilot_p = subparsers.add_parser(
         "copilot",
-        help="Run the copilot CLI on the remote server",
-        description="Execute copilot on the remote server asynchronously and stream its output.",
+        help="Manage copilot sessions on the remote server",
+        description="Manage copilot sessions on the remote server (run, stop, view logs).",
     )
     copilot_p.add_argument("--profile", metavar="NAME", default="default",
                            help="Profile to use (default: default)")
     copilot_p.add_argument("-v", "--verbose", action="store_true",
                            help="Show extra output")
-    copilot_p.add_argument("--model", metavar="MODEL", default=None,
-                           help="Model for copilot (default: claude-sonnet-4.6)")
-    copilot_p.add_argument("--resume", metavar="SESSION_ID", default=None,
-                           help="Resume streaming an existing copilot session log")
-    copilot_p.add_argument("--autopilot", action="store_true",
-                           help="Pass --autopilot to the copilot command")
 
     copilot_sub = copilot_p.add_subparsers(dest="copilot_sub", metavar="ACTION")
+
+    # copilot run
+    run_p = copilot_sub.add_parser(
+        "run",
+        help="Execute copilot on the remote server and stream its output",
+        description="Execute copilot on the remote server asynchronously and stream its output.",
+    )
+    run_p.add_argument("-v", "--verbose", action="store_true", help="Show extra output")
+    run_p.add_argument("--model", metavar="MODEL", default=None,
+                       help="Model for copilot (default: claude-sonnet-4.6)")
+    run_p.add_argument("--resume", metavar="SESSION_ID", default=None,
+                       help="Resume streaming an existing copilot session log")
+    run_p.add_argument("--autopilot", action="store_true",
+                       help="Pass --autopilot to the copilot command")
+    run_p.add_argument("copilot_args", nargs=argparse.REMAINDER,
+                       help="Arguments forwarded to the copilot command on the server")
 
     # copilot logs [session-id]
     logs_p = copilot_sub.add_parser("logs", help="List or view copilot session logs")
@@ -462,10 +476,6 @@ def main():
     stop_p.add_argument("session_id", metavar="SESSION_ID",
                         help="Session ID to stop")
     stop_p.add_argument("-v", "--verbose", action="store_true", help="Show extra output")
-
-    # Remaining args forwarded to copilot on the server
-    copilot_p.add_argument("copilot_args", nargs=argparse.REMAINDER,
-                           help="Arguments forwarded to the copilot command on the server")
 
     args = parser.parse_args()
 
