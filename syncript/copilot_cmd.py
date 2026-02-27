@@ -22,7 +22,7 @@ from .utils.logging import log, warn
 REMOTE_LOGS_DIR = "~/.syncript/logs"
 LOG_RETENTION_DAYS = 30
 DEFAULT_MODEL = "claude-sonnet-4.6"
-STREAM_POLL_INTERVAL = 0.5   # seconds between tail polls
+STREAM_POLL_INTERVAL = 1     # seconds between log polls
 RECONNECT_WAIT = 5           # seconds before reconnect attempt
 
 
@@ -179,10 +179,21 @@ def run_copilot(extra_args: list, model=None, autopilot: bool = False, verbose: 
     _ensure_logs_dir(ssh)
     _cleanup_old_logs(ssh)
 
-    # Launch the remote process
-    pid_out, _ = ssh.exec(wrapper, timeout=30)
-    pid = pid_out.strip()
-    log(f"[copilot] session {session_id} started (remote PID {pid})")
+    # Print the command being executed on the remote server
+    print(f"[copilot] executing on remote server:\n  {copilot_cmd}\n")
+
+    # Launch the remote process exactly once — never retry, as a duplicate
+    # invocation could cause unintended consequences on the remote server.
+    try:
+        pid_out, _ = ssh.exec_once(wrapper, timeout=30)
+        pid = pid_out.strip()
+        log(f"[copilot] session {session_id} started (remote PID {pid})")
+    except Exception as exc:
+        warn(f"[copilot] failed to launch on remote server: {exc}")
+        warn(f"[copilot] NOT retrying. Session ID: {session_id}")
+        warn(f"[copilot] If the process did start, resume with: syncript copilot resume {session_id}")
+        ssh.disconnect()
+        return
     log(f"[copilot] log file : {log_file}")
     print(f"--- copilot session {session_id} ---")
 

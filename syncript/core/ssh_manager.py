@@ -90,6 +90,17 @@ class SSHManager:
             raise RuntimeError(f"remote command exited {rc}: {cmd!r}\nstderr: {err.strip()}")
         return out, err
 
+    def exec_once(self, cmd: str, timeout: int = 30) -> tuple[str, str]:
+        """Run a command exactly once (no retry). Use for commands that must not be duplicated."""
+        self.ensure_connected()
+        _, stdout, stderr = self._ssh.exec_command(cmd, timeout=timeout)
+        out = stdout.read().decode("utf-8", errors="replace")
+        err = stderr.read().decode("utf-8", errors="replace")
+        rc = stdout.channel.recv_exit_status()
+        if rc != 0:
+            raise RuntimeError(f"remote command exited {rc}: {cmd!r}\nstderr: {err.strip()}")
+        return out, err
+
     def exec_nowait(self, cmd: str):
         """Fire-and-forget: don't wait for exit status (for tmux / bg jobs)."""
         self.ensure_connected()
