@@ -331,7 +331,7 @@ def cmd_status(args):
 
 def cmd_copilot(args):
     """Dispatch copilot sub-subcommands."""
-    from syncript.copilot_cmd import run_copilot, list_logs, view_log, stop_copilot
+    from syncript.copilot_cmd import run_copilot, list_logs, view_log, stop_copilot, resume_copilot
 
     sub = getattr(args, "copilot_sub", None)
 
@@ -344,12 +344,17 @@ def cmd_copilot(args):
     elif sub == "stop":
         stop_copilot(args.session_id, verbose=args.verbose)
     else:
-        # Default: run copilot with forwarded args
-        run_copilot(
-            extra_args=args.copilot_args,
-            model=args.model,
-            verbose=args.verbose,
-        )
+        resume = getattr(args, "resume", None)
+        if resume:
+            resume_copilot(resume, verbose=args.verbose)
+        else:
+            # Default: run copilot with forwarded args
+            run_copilot(
+                extra_args=args.copilot_args,
+                model=args.model,
+                autopilot=args.autopilot,
+                verbose=args.verbose,
+            )
 
 
 # ── main ──────────────────────────────────────────────────────────────────────
@@ -439,6 +444,10 @@ def main():
                            help="Show extra output")
     copilot_p.add_argument("--model", metavar="MODEL", default=None,
                            help="Model for copilot (default: claude-sonnet-4.6)")
+    copilot_p.add_argument("--resume", metavar="SESSION_ID", default=None,
+                           help="Resume streaming an existing copilot session log")
+    copilot_p.add_argument("--autopilot", action="store_true",
+                           help="Pass --autopilot to the copilot command")
 
     copilot_sub = copilot_p.add_subparsers(dest="copilot_sub", metavar="ACTION")
 

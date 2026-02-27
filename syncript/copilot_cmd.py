@@ -5,10 +5,15 @@ Author: Younes Rahimi
 Runs the `copilot` CLI on the remote server asynchronously (nohup),
 streams the log file back in real-time, and supports session management.
 """
+import re
 import sys
 import time
 import uuid
 from pathlib import Path, PurePosixPath
+
+_UUID_RE = re.compile(
+    r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", re.I
+)
 
 from . import config as _cfg
 from .core.ssh_manager import SSHManager
@@ -38,8 +43,26 @@ def _resolve_remote_cwd() -> str:
         return str(_cfg.REMOTE_ROOT)
 
 
-def _log_path(session_id: str) -> str:
-    return f"{REMOTE_LOGS_DIR}/copilot-{session_id}.log"
+def _log_path(session_id: str, folder_name: str = "", timestamp: str = "") -> str:
+    parts = ["copilot"]
+    if folder_name:
+        parts.append(folder_name)
+    parts.append(session_id)
+    if timestamp:
+        parts.append(timestamp)
+    return f"{REMOTE_LOGS_DIR}/{'-'.join(parts)}.log"
+
+
+def _find_log_by_session_id(ssh: SSHManager, session_id: str) -> str:
+    """Locate a log file by session UUID on the remote server."""
+    out, _ = ssh.exec(
+        f"ls {REMOTE_LOGS_DIR}/copilot-*{session_id}*.log 2>/dev/null || true",
+        timeout=15,
+    )
+    files = [f.strip() for f in out.strip().splitlines() if f.strip()]
+    if not files:
+        raise FileNotFoundError(f"No log file found for session {session_id}")
+    return files[0]
 
 
 def _ensure_logs_dir(ssh: SSHManager):
@@ -106,7 +129,7 @@ def _stream_log(ssh: SSHManager, log_file: str, start_offset: int = 0) -> int:
 
 # ── public commands ───────────────────────────────────────────────────────────
 
-def run_copilot(extra_args: list, model=None, verbose: bool = False):
+def run_copilot(extra_args: list, model=None, autopilot: bool = False, verbose: bool = False):
     """
     Execute `copilot` on the remote server asynchronously and stream its output.
 
@@ -119,7 +142,9 @@ def run_copilot(extra_args: list, model=None, verbose: bool = False):
     _apply_config(syncript_path, verbose)
 
     session_id = str(uuid.uuid4())
-    log_file = _log_path(session_id)
+    folder_name = Path.cwd().name
+    timestamp = time.strftime("%Y%m%d-%H%M%S")
+    log_file = _log_path(session_id, folder_name=folder_name, timestamp=timestamp)
     remote_cwd = _resolve_remote_cwd()
     effective_model = model or DEFAULT_MODEL
 
@@ -132,8 +157,9 @@ def run_copilot(extra_args: list, model=None, verbose: bool = False):
         if flag in copilot_args:
             copilot_args.remove(flag)
 
+    autopilot_flag = "--autopilot " if autopilot else ""
     copilot_cmd = (
-        f"copilot --yolo "
+        f"copilot --yolo {autopilot_flag}"
         f'-p "Read \'.copilot.prompt.md\' file for the actual prompt" '
         f"--share {log_file} "
         + " ".join(copilot_args)
@@ -189,22 +215,26 @@ def list_logs(verbose: bool = False):
         print("No copilot log files found.")
         return
 
-    print(f"{'SESSION ID':<38}  {'MODIFIED':<19}  {'SIZE':>8}")
-    print("-" * 72)
+    print(f"{'SESSION ID':<38}  {'FOLDER':<20}  {'MODIFIED':<19}  {'SIZE':>8}")
+    print("-" * 92)
     for line in out.strip().splitlines():
         # ls -lt output: perms links user group size date time path
         parts = line.split()
-        if len(parts) < 9:
+        if len(parts) < 8:
             continue
         size = parts[4]
         date = parts[5]
         time_str = parts[6]
         path = parts[-1]
         fname = path.split("/")[-1]
-        # copilot-<uuid>.log
         if fname.startswith("copilot-") and fname.endswith(".log"):
-            session_id = fname[len("copilot-"):-len(".log")]
-            print(f"{session_id:<38}  {date} {time_str}  {size:>8}")
+            m = _UUID_RE.search(fname)
+            if m:
+                session_id = m.group(0)
+                # folder name is between "copilot-" and the UUID
+                prefix = fname[len("copilot-"):m.start()]
+                folder = prefix.rstrip("-") if prefix else ""
+                print(f"{session_id:<38}  {folder:<20}  {date} {time_str}  {size:>8}")
 
 
 def view_log(session_id: str, verbose: bool = False):
@@ -212,11 +242,15 @@ def view_log(session_id: str, verbose: bool = False):
     syncript_path = _find_config()
     _apply_config(syncript_path, verbose)
 
-    log_file = _log_path(session_id)
     ssh = SSHManager()
     ssh.connect()
 
     try:
+        try:
+            log_file = _find_log_by_session_id(ssh, session_id)
+        except FileNotFoundError:
+            print(f"No log found for session {session_id}.")
+            return
         out, _ = ssh.exec(f"cat {log_file} 2>/dev/null || true", timeout=30)
     finally:
         ssh.disconnect()
@@ -232,11 +266,15 @@ def stop_copilot(session_id: str, verbose: bool = False):
     syncript_path = _find_config()
     _apply_config(syncript_path, verbose)
 
-    log_file = _log_path(session_id)
     ssh = SSHManager()
     ssh.connect()
 
     try:
+        try:
+            log_file = _find_log_by_session_id(ssh, session_id)
+        except FileNotFoundError:
+            print(f"No running copilot process found for session {session_id}.")
+            return
         out, _ = ssh.exec(
             f"pgrep -f {log_file} 2>/dev/null || true",
             timeout=15,
@@ -260,6 +298,29 @@ def stop_copilot(session_id: str, verbose: bool = False):
             print(f"Stopped copilot session {session_id}.")
     finally:
         ssh.disconnect()
+
+
+def resume_copilot(session_id: str, verbose: bool = False):
+    """Resume streaming an existing copilot session log from the beginning."""
+    syncript_path = _find_config()
+    _apply_config(syncript_path, verbose)
+
+    ssh = SSHManager()
+    ssh.connect()
+
+    try:
+        log_file = _find_log_by_session_id(ssh, session_id)
+    except FileNotFoundError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        ssh.disconnect()
+        return
+
+    log(f"[copilot] resuming session {session_id}")
+    log(f"[copilot] log file : {log_file}")
+    print(f"--- copilot session {session_id} (resumed) ---")
+
+    _stream_log(ssh, log_file)
+    ssh.disconnect()
 
 
 # ── internal helpers ──────────────────────────────────────────────────────────
