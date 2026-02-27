@@ -7,7 +7,9 @@ streams the log file back in real-time, and supports session management.
 """
 import re
 import sys
+import termios
 import time
+import tty
 import uuid
 from pathlib import Path, PurePosixPath
 
@@ -20,6 +22,7 @@ from .core.ssh_manager import SSHManager
 from .utils.logging import log, warn
 
 REMOTE_LOGS_DIR = "~/.syncript/logs"
+_FNAME_TS_RE = re.compile(r"(\d{8})-(\d{6})\.log$")
 LOG_RETENTION_DAYS = 30
 DEFAULT_MODEL = "claude-sonnet-4.6"
 STREAM_POLL_INTERVAL = 10    # seconds between log polls
@@ -141,7 +144,127 @@ def _stream_log(ssh: SSHManager, log_file: str, start_offset: int = 0) -> int:
     return offset
 
 
-# ── public commands ───────────────────────────────────────────────────────────
+# ── interactive log browser helpers ──────────────────────────────────────────
+
+def _parse_log_timestamp(fname: str) -> str:
+    """Extract timestamp from log filename and return as 'YYYY-MM-DD HH:MM:SS'."""
+    m = _FNAME_TS_RE.search(fname)
+    if m:
+        d, t = m.group(1), m.group(2)
+        return f"{d[:4]}-{d[4:6]}-{d[6:8]} {t[:2]}:{t[2:4]}:{t[4:6]}"
+    return "(unknown)"
+
+
+def _clear_screen():
+    sys.stdout.write("\033[2J\033[H")
+    sys.stdout.flush()
+
+
+def _getch() -> str:
+    """Read one raw character from stdin (Unix only)."""
+    fd = sys.stdin.fileno()
+    old = termios.tcgetattr(fd)
+    try:
+        tty.setraw(fd)
+        return sys.stdin.read(1)
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old)
+
+
+def _display_log_list(entries: list):
+    """Render the numbered log list to the terminal."""
+    _clear_screen()
+    col_id = 38
+    col_folder = 22
+    col_ts = 21
+    header = f"  {'#':<4}{'SESSION ID':<{col_id}}{'FOLDER':<{col_folder}}{'STARTED':<{col_ts}}"
+    print(header)
+    print("  " + "-" * (col_id + col_folder + col_ts + 4))
+    for i, e in enumerate(entries, 1):
+        folder = e["folder"][:col_folder - 1] if e["folder"] else ""
+        print(f"  {i:<4}{e['session_id']:<{col_id}}{folder:<{col_folder}}{e['timestamp']:<{col_ts}}")
+    print()
+
+
+def _read_selection(max_n: int) -> "int | None":
+    """
+    Prompt for a 1-based index selection.
+    Returns the chosen index or None if Esc / 'q' was pressed.
+    """
+    prompt = f"Select log [1-{max_n}], or press Esc to exit: "
+    sys.stdout.write(prompt)
+    sys.stdout.flush()
+    fd = sys.stdin.fileno()
+    old = termios.tcgetattr(fd)
+    buf = ""
+    try:
+        tty.setraw(fd)
+        while True:
+            ch = sys.stdin.read(1)
+            if ch in ("\x1b", "q", "Q"):
+                sys.stdout.write("\r\n")
+                sys.stdout.flush()
+                return None
+            elif ch in ("\r", "\n"):
+                sys.stdout.write("\r\n")
+                sys.stdout.flush()
+                if buf.isdigit():
+                    n = int(buf)
+                    if 1 <= n <= max_n:
+                        return n
+                # Invalid input – redisplay prompt
+                buf = ""
+                sys.stdout.write(prompt)
+                sys.stdout.flush()
+            elif ch in ("\x7f", "\x08"):  # backspace
+                if buf:
+                    buf = buf[:-1]
+                    sys.stdout.write("\b \b")
+                    sys.stdout.flush()
+            elif ch.isdigit():
+                buf += ch
+                sys.stdout.write(ch)
+                sys.stdout.flush()
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old)
+
+
+def _display_log_content(entry: dict, content: str):
+    """
+    Show the last 50 lines of a log file and wait for Esc to return.
+    The screen is cleared so surrounding terminal output is not polluted.
+    """
+    _clear_screen()
+    lines = content.rstrip("\n").split("\n") if content.strip() else []
+    display = lines[-50:]
+    header = (
+        f"Session : {entry['session_id']}\n"
+        f"Folder  : {entry['folder']}\n"
+        f"Started : {entry['timestamp']}\n"
+        + "-" * 72
+    )
+    print(header)
+    if display:
+        print("\n".join(display))
+    else:
+        print("(log is empty)")
+    print("\n\033[2m--- Press Esc to return to log list ---\033[0m", end="", flush=True)
+
+    # Wait for Esc
+    fd = sys.stdin.fileno()
+    old = termios.tcgetattr(fd)
+    try:
+        tty.setraw(fd)
+        while True:
+            ch = sys.stdin.read(1)
+            if ch == "\x1b":
+                break
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old)
+    sys.stdout.write("\r\n")
+    sys.stdout.flush()
+
+
 
 def run_copilot(extra_args: list, model=None, autopilot: bool = False, verbose: bool = False):
     """
@@ -231,7 +354,13 @@ def run_copilot(extra_args: list, model=None, autopilot: bool = False, verbose: 
 
 
 def list_logs(verbose: bool = False):
-    """List all copilot log files on the remote server."""
+    """
+    Interactive copilot log browser.
+
+    Displays a numbered list of available log files. The user can select a log
+    by number to view its last 50 lines, then press Esc to return to the list.
+    Falls back to a plain listing when stdout is not a TTY.
+    """
     syncript_path = _find_config()
     _apply_config(syncript_path, verbose)
 
@@ -240,36 +369,64 @@ def list_logs(verbose: bool = False):
 
     try:
         out, _ = ssh.exec(
-            f"ls -lt --time-style=+\"%Y-%m-%d %H:%M:%S\" {REMOTE_LOGS_DIR}/copilot-*.log 2>/dev/null || true",
+            f"ls -1t {REMOTE_LOGS_DIR}/copilot-*.log 2>/dev/null || true",
             timeout=15,
         )
-    finally:
+    except Exception:
         ssh.disconnect()
-
-    if not out.strip():
         print("No copilot log files found.")
         return
 
-    print(f"{'SESSION ID':<38}  {'FOLDER':<20}  {'MODIFIED':<19}  {'SIZE':>8}")
-    print("-" * 92)
-    for line in out.strip().splitlines():
-        # ls -lt output: perms links user group size date time path
-        parts = line.split()
-        if len(parts) < 8:
-            continue
-        size = parts[4]
-        date = parts[5]
-        time_str = parts[6]
-        path = parts[-1]
+    files = [f.strip() for f in out.strip().splitlines() if f.strip()]
+    if not files:
+        ssh.disconnect()
+        print("No copilot log files found.")
+        return
+
+    entries = []
+    for path in files:
         fname = path.split("/")[-1]
-        if fname.startswith("copilot-") and fname.endswith(".log"):
-            m = _UUID_RE.search(fname)
-            if m:
-                session_id = m.group(0)
-                # folder name is between "copilot-" and the UUID
-                prefix = fname[len("copilot-"):m.start()]
-                folder = prefix.rstrip("-") if prefix else ""
-                print(f"{session_id:<38}  {folder:<20}  {date} {time_str}  {size:>8}")
+        m = _UUID_RE.search(fname)
+        if not m:
+            continue
+        session_id = m.group(0)
+        prefix = fname[len("copilot-"):m.start()]
+        folder = prefix.rstrip("-") if prefix else ""
+        timestamp = _parse_log_timestamp(fname)
+        entries.append({"path": path, "session_id": session_id, "folder": folder, "timestamp": timestamp})
+
+    if not entries:
+        ssh.disconnect()
+        print("No copilot log files found.")
+        return
+
+    # Non-interactive fallback (e.g., piped output)
+    if not sys.stdout.isatty() or not sys.stdin.isatty():
+        try:
+            col_id = 38
+            col_folder = 22
+            col_ts = 21
+            print(f"{'SESSION ID':<{col_id}}{'FOLDER':<{col_folder}}{'STARTED':<{col_ts}}")
+            print("-" * (col_id + col_folder + col_ts))
+            for e in entries:
+                print(f"{e['session_id']:<{col_id}}{e['folder']:<{col_folder}}{e['timestamp']:<{col_ts}}")
+        finally:
+            ssh.disconnect()
+        return
+
+    # Interactive browser
+    try:
+        while True:
+            _display_log_list(entries)
+            choice = _read_selection(len(entries))
+            if choice is None:
+                break
+            entry = entries[choice - 1]
+            content, _ = ssh.exec(f"cat {entry['path']} 2>/dev/null || true", timeout=30)
+            _display_log_content(entry, content)
+    finally:
+        ssh.disconnect()
+        _clear_screen()
 
 
 def view_log(session_id: str, verbose: bool = False):
