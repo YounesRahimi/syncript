@@ -75,6 +75,18 @@ def _find_log_by_session_id(ssh: SSHManager, session_id: str) -> str:
     return files[0]
 
 
+def _find_latest_log(ssh: SSHManager) -> str:
+    """Return the path of the most recently modified copilot log file on the remote server."""
+    out, _ = ssh.exec(
+        f"ls -1t {REMOTE_LOGS_DIR}/copilot-*.log 2>/dev/null | head -1 || true",
+        timeout=15,
+    )
+    latest = out.strip()
+    if not latest:
+        raise FileNotFoundError("No copilot log files found on the remote server.")
+    return latest
+
+
 def _ensure_logs_dir(ssh: SSHManager):
     """Create the remote logs directory if it does not exist."""
     ssh.exec(f"mkdir -p {REMOTE_LOGS_DIR}", timeout=15)
@@ -475,9 +487,12 @@ def view_log(session_id: str, verbose: bool = False):
 
     try:
         try:
-            log_file = _find_log_by_session_id(ssh, session_id)
-        except FileNotFoundError:
-            print(f"No log found for session {session_id}.")
+            if session_id == "latest":
+                log_file = _find_latest_log(ssh)
+            else:
+                log_file = _find_log_by_session_id(ssh, session_id)
+        except FileNotFoundError as exc:
+            print(f"No log found: {exc}")
             return
         out, _ = ssh.exec(f"cat {log_file} 2>/dev/null || true", timeout=30)
     finally:
@@ -536,16 +551,29 @@ def resume_copilot(session_id: str, verbose: bool = False):
     ssh = SSHManager()
     ssh.connect()
 
-    try:
-        log_file = _find_log_by_session_id(ssh, session_id)
-    except FileNotFoundError as exc:
-        print(f"error: {exc}", file=sys.stderr)
-        ssh.disconnect()
-        return
+    if session_id == "latest":
+        try:
+            log_file = _find_latest_log(ssh)
+        except FileNotFoundError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            ssh.disconnect()
+            return
+        # Extract session ID from the resolved log filename for display
+        fname = log_file.split("/")[-1]
+        m = _UUID_RE.search(fname)
+        display_id = m.group(0) if m else log_file
+    else:
+        try:
+            log_file = _find_log_by_session_id(ssh, session_id)
+        except FileNotFoundError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            ssh.disconnect()
+            return
+        display_id = session_id
 
-    log(f"[copilot] resuming session {session_id}")
+    log(f"[copilot] resuming session {display_id}")
     log(f"[copilot] log file : {log_file}")
-    print(f"--- copilot session {session_id} (resumed) ---")
+    print(f"--- copilot session {display_id} (resumed) ---")
 
     _stream_log(ssh, log_file)
     ssh.disconnect()

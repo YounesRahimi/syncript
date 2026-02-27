@@ -459,7 +459,7 @@ def main():
     run_p.add_argument("--model", metavar="MODEL", default=None,
                        help="Model for copilot (default: claude-sonnet-4.6)")
     run_p.add_argument("--resume", metavar="SESSION_ID", default=None,
-                       help="Resume streaming an existing copilot session log")
+                       help="Resume streaming an existing copilot session log (use 'latest' for the most recent)")
     run_p.add_argument("--autopilot", action="store_true",
                        help="Pass --autopilot to the copilot command")
     run_p.add_argument("copilot_args", nargs=argparse.REMAINDER,
@@ -468,7 +468,7 @@ def main():
     # copilot logs [session-id]
     logs_p = copilot_sub.add_parser("logs", help="List or view copilot session logs")
     logs_p.add_argument("session_id", nargs="?", metavar="SESSION_ID",
-                        help="Session ID to view (omit to list all)")
+                        help="Session ID to view, or 'latest' for the most recent (omit to list all)")
     logs_p.add_argument("-v", "--verbose", action="store_true", help="Show extra output")
 
     # copilot stop <session-id>
