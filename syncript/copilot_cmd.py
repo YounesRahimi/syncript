@@ -341,6 +341,7 @@ def run_copilot(extra_args: list, model=None, autopilot: bool = False, verbose: 
         f"copilot --yolo {autopilot_flag}"
         f'-p "Read \'.copilot.prompt.md\' file for the actual prompt" '
         f"--share {log_file} "
+        f"--resume {session_id} "
         + " ".join(copilot_args)
     )
 
