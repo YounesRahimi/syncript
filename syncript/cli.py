@@ -338,7 +338,13 @@ def cmd_copilot(args):
     if sub == "run":
         resume = getattr(args, "resume", None)
         if resume:
-            resume_copilot(resume, verbose=args.verbose)
+            resume_copilot(
+                resume,
+                extra_args=args.copilot_args,
+                model=args.model,
+                autopilot=args.autopilot,
+                verbose=args.verbose,
+            )
         else:
             run_copilot(
                 extra_args=args.copilot_args,

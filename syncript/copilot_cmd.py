@@ -543,8 +543,18 @@ def stop_copilot(session_id: str, verbose: bool = False):
         ssh.disconnect()
 
 
-def resume_copilot(session_id: str, verbose: bool = False):
-    """Resume streaming an existing copilot session log from the beginning."""
+def resume_copilot(
+    session_id: str,
+    extra_args: list = None,
+    model=None,
+    autopilot: bool = False,
+    verbose: bool = False,
+):
+    """
+    Resume a copilot session: re-launch copilot on the remote server with
+    ``--resume <session-id>`` so it continues the previous conversation,
+    appending output to the existing log file and streaming it locally.
+    """
     syncript_path = _find_config()
     _apply_config(syncript_path, verbose)
 
@@ -571,11 +581,60 @@ def resume_copilot(session_id: str, verbose: bool = False):
             return
         display_id = session_id
 
-    log(f"[copilot] resuming session {display_id}")
+    # Get current log size so we stream only new output produced by this resume
+    try:
+        size_out, _ = ssh.exec(
+            f"wc -c < {log_file} 2>/dev/null || echo 0",
+            timeout=15,
+        )
+        start_offset = int(size_out.strip() or 0)
+    except Exception:
+        start_offset = 0
+
+    effective_model = model or DEFAULT_MODEL
+    copilot_args = list(extra_args or [])
+    if "--model" not in copilot_args:
+        copilot_args.extend(["--model", effective_model])
+    for flag in ("--yolo", "--share"):
+        if flag in copilot_args:
+            copilot_args.remove(flag)
+
+    autopilot_flag = "--autopilot " if autopilot else ""
+    copilot_cmd = (
+        f"copilot --yolo {autopilot_flag}"
+        f'-p "Read \'.copilot.prompt.md\' file for the actual prompt" '
+        f"--share {log_file} "
+        f"--resume {display_id} "
+        + " ".join(copilot_args)
+    )
+
+    escaped_cmd = copilot_cmd.replace("'", "'\\''")
+    remote_cwd = _resolve_remote_cwd()
+    wrapper = (
+        f"cd {remote_cwd} && "
+        f"nohup bash -c '{escaped_cmd} >> {log_file} 2>&1 ; "
+        f"echo __COPILOT_DONE__ >> {log_file}' "
+        f"> /dev/null 2>&1 & echo $!"
+    )
+
+    _transfer_prompt_file(ssh, remote_cwd)
+
+    print(f"[copilot] resuming session on remote server:\n  {copilot_cmd}\n")
+
+    try:
+        pid_out, _ = ssh.exec_once(wrapper, timeout=30)
+        pid = pid_out.strip()
+        log(f"[copilot] resume session {display_id} started (remote PID {pid})")
+    except Exception as exc:
+        warn(f"[copilot] failed to launch resume on remote server: {exc}")
+        ssh.disconnect()
+        return
+
     log(f"[copilot] log file : {log_file}")
     print(f"--- copilot session {display_id} (resumed) ---")
 
-    _stream_log(ssh, log_file)
+    time.sleep(1.0)
+    _stream_log(ssh, log_file, start_offset=start_offset)
     ssh.disconnect()
 
 

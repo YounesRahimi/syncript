@@ -114,7 +114,13 @@ fi
 # ── Install dependencies ───────────────────────────────────────────────────────
 
 info "Installing Python dependencies (paramiko, pyyaml) …"
-python3 -m pip install --quiet --user paramiko pyyaml
+if python3 -c "import paramiko, yaml" 2>/dev/null; then
+    info "Python dependencies already available, skipping install."
+else
+    python3 -m pip install --quiet --user paramiko pyyaml 2>/dev/null \
+        || python3 -m pip install --quiet --user --break-system-packages paramiko pyyaml \
+        || warn "Could not install Python dependencies. Ensure paramiko and pyyaml are available."
+fi
 
 # ── Create bin directory ──────────────────────────────────────────────────────
 
