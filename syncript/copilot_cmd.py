@@ -7,10 +7,15 @@ streams the log file back in real-time, and supports session management.
 """
 import re
 import sys
-import termios
 import time
-import tty
 import uuid
+
+try:
+    import termios
+    import tty
+    _HAS_TERMIOS = True
+except ImportError:
+    _HAS_TERMIOS = False
 from pathlib import Path, PurePosixPath
 
 _UUID_RE = re.compile(
@@ -161,7 +166,10 @@ def _clear_screen():
 
 
 def _getch() -> str:
-    """Read one raw character from stdin (Unix only)."""
+    """Read one raw character from stdin."""
+    if not _HAS_TERMIOS:
+        import msvcrt
+        return msvcrt.getwch()
     fd = sys.stdin.fileno()
     old = termios.tcgetattr(fd)
     try:
@@ -194,6 +202,37 @@ def _read_selection(max_n: int) -> "int | None":
     prompt = f"Select log [1-{max_n}], or press Esc to exit: "
     sys.stdout.write(prompt)
     sys.stdout.flush()
+
+    if not _HAS_TERMIOS:
+        import msvcrt
+        buf = ""
+        while True:
+            ch = msvcrt.getwch()
+            if ch in ("\x1b", "q", "Q"):
+                sys.stdout.write("\r\n")
+                sys.stdout.flush()
+                return None
+            elif ch in ("\r", "\n"):
+                sys.stdout.write("\r\n")
+                sys.stdout.flush()
+                if buf.isdigit():
+                    n = int(buf)
+                    if 1 <= n <= max_n:
+                        return n
+                buf = ""
+                sys.stdout.write(prompt)
+                sys.stdout.flush()
+            elif ch in ("\x7f", "\x08"):
+                if buf:
+                    buf = buf[:-1]
+                    sys.stdout.write("\b \b")
+                    sys.stdout.flush()
+            elif ch.isdigit():
+                buf += ch
+                sys.stdout.write(ch)
+                sys.stdout.flush()
+        return None
+
     fd = sys.stdin.fileno()
     old = termios.tcgetattr(fd)
     buf = ""
@@ -251,16 +290,23 @@ def _display_log_content(entry: dict, content: str):
     print("\n\033[2m--- Press Esc to return to log list ---\033[0m", end="", flush=True)
 
     # Wait for Esc
-    fd = sys.stdin.fileno()
-    old = termios.tcgetattr(fd)
-    try:
-        tty.setraw(fd)
+    if not _HAS_TERMIOS:
+        import msvcrt
         while True:
-            ch = sys.stdin.read(1)
+            ch = msvcrt.getwch()
             if ch == "\x1b":
                 break
-    finally:
-        termios.tcsetattr(fd, termios.TCSADRAIN, old)
+    else:
+        fd = sys.stdin.fileno()
+        old = termios.tcgetattr(fd)
+        try:
+            tty.setraw(fd)
+            while True:
+                ch = sys.stdin.read(1)
+                if ch == "\x1b":
+                    break
+        finally:
+            termios.tcsetattr(fd, termios.TCSADRAIN, old)
     sys.stdout.write("\r\n")
     sys.stdout.flush()
 
@@ -317,6 +363,8 @@ def run_copilot(extra_args: list, model=None, autopilot: bool = False, verbose: 
         f"echo __COPILOT_DONE__ >> {log_file}' "
         f"> /dev/null 2>&1 & echo $!"
     )
+
+    wrapper = f"bash -c '{wrapper}' > /dev/null 2>&1 & echo $!" # final wrapper to suppress any output from the nohup command itself, ensuring only the PID is returned
 
     ssh = SSHManager()
     ssh.connect()
