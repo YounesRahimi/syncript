@@ -22,7 +22,7 @@ from .utils.logging import log, warn
 REMOTE_LOGS_DIR = "~/.syncript/logs"
 LOG_RETENTION_DAYS = 30
 DEFAULT_MODEL = "claude-sonnet-4.6"
-STREAM_POLL_INTERVAL = 1     # seconds between log polls
+STREAM_POLL_INTERVAL = 10    # seconds between log polls
 RECONNECT_WAIT = 5           # seconds before reconnect attempt
 
 
@@ -179,11 +179,18 @@ def run_copilot(extra_args: list, model=None, autopilot: bool = False, verbose: 
         + " ".join(copilot_args)
     )
 
-    # Wrapper: cd, nohup copilot, append sentinel when done
+    # Escape single quotes in copilot_cmd so it can be safely embedded inside
+    # the outer bash -c '...' single-quoted string.  The sequence '\'' ends the
+    # single-quoted string, appends a literal single quote, and re-opens it.
+    escaped_cmd = copilot_cmd.replace("'", "'\\''")
+
+    # Wrapper: cd, nohup copilot in the background, append sentinel when done.
+    # The trailing "& echo $!" makes the SSH command return immediately with the
+    # remote PID instead of blocking until copilot finishes (which can take minutes).
     wrapper = (
         f"mkdir -p {REMOTE_LOGS_DIR} && "
         f"cd {remote_cwd} && "
-        f"nohup bash -c '{copilot_cmd} >> {log_file} 2>&1 ; "
+        f"nohup bash -c '{escaped_cmd} >> {log_file} 2>&1 ; "
         f"echo __COPILOT_DONE__ >> {log_file}' "
         f"> /dev/null 2>&1 & echo $!"
     )
