@@ -6,6 +6,8 @@ Runs the `copilot` CLI on the remote server asynchronously (nohup),
 streams the log file back in real-time, and supports session management.
 """
 import re
+import shutil
+import subprocess
 import sys
 import time
 import uuid
@@ -165,6 +167,15 @@ def _clear_screen():
     sys.stdout.flush()
 
 
+def _page_content(content: str):
+    """Display *content* through a pager (less or more) when in a TTY, else write directly."""
+    pager = shutil.which("less") or shutil.which("more")
+    if pager and sys.stdout.isatty():
+        subprocess.run([pager, "-R"], input=content.encode(), check=False)
+    else:
+        sys.stdout.write(content)
+
+
 def _getch() -> str:
     """Read one raw character from stdin."""
     if not _HAS_TERMIOS:
@@ -197,9 +208,9 @@ def _display_log_list(entries: list):
 def _read_selection(max_n: int) -> "int | None":
     """
     Prompt for a 1-based index selection.
-    Returns the chosen index or None if Esc / 'q' was pressed.
+    Returns the chosen index or None if Esc / Ctrl+C / 'q' was pressed.
     """
-    prompt = f"Select log [1-{max_n}], or press Esc to exit: "
+    prompt = f"Select log [1-{max_n}], or press Esc/Ctrl+C to exit: "
     sys.stdout.write(prompt)
     sys.stdout.flush()
 
@@ -208,7 +219,7 @@ def _read_selection(max_n: int) -> "int | None":
         buf = ""
         while True:
             ch = msvcrt.getwch()
-            if ch in ("\x1b", "q", "Q"):
+            if ch in ("\x1b", "\x03", "q", "Q"):
                 sys.stdout.write("\r\n")
                 sys.stdout.flush()
                 return None
@@ -240,7 +251,7 @@ def _read_selection(max_n: int) -> "int | None":
         tty.setraw(fd)
         while True:
             ch = sys.stdin.read(1)
-            if ch in ("\x1b", "q", "Q"):
+            if ch in ("\x1b", "\x03", "q", "Q"):
                 sys.stdout.write("\r\n")
                 sys.stdout.flush()
                 return None
@@ -270,45 +281,18 @@ def _read_selection(max_n: int) -> "int | None":
 
 def _display_log_content(entry: dict, content: str):
     """
-    Show the last 50 lines of a log file and wait for Esc to return.
-    The screen is cleared so surrounding terminal output is not polluted.
+    Display the full log file content via a pager.
+    When the user exits the pager (e.g. 'q' in less), control returns to the
+    interactive log list.
     """
-    _clear_screen()
-    lines = content.rstrip("\n").split("\n") if content.strip() else []
-    display = lines[-50:]
     header = (
         f"Session : {entry['session_id']}\n"
         f"Folder  : {entry['folder']}\n"
         f"Started : {entry['timestamp']}\n"
-        + "-" * 72
+        + "-" * 72 + "\n"
     )
-    print(header)
-    if display:
-        print("\n".join(display))
-    else:
-        print("(log is empty)")
-    print("\n\033[2m--- Press Esc to return to log list ---\033[0m", end="", flush=True)
-
-    # Wait for Esc
-    if not _HAS_TERMIOS:
-        import msvcrt
-        while True:
-            ch = msvcrt.getwch()
-            if ch == "\x1b":
-                break
-    else:
-        fd = sys.stdin.fileno()
-        old = termios.tcgetattr(fd)
-        try:
-            tty.setraw(fd)
-            while True:
-                ch = sys.stdin.read(1)
-                if ch == "\x1b":
-                    break
-        finally:
-            termios.tcsetattr(fd, termios.TCSADRAIN, old)
-    sys.stdout.write("\r\n")
-    sys.stdout.flush()
+    full_content = header + (content if content.strip() else "(log is empty)\n")
+    _page_content(full_content)
 
 
 
@@ -364,7 +348,6 @@ def run_copilot(extra_args: list, model=None, autopilot: bool = False, verbose: 
         f"> /dev/null 2>&1 & echo $!"
     )
 
-    wrapper = f"bash -c '{wrapper}' > /dev/null 2>&1 & echo $!" # final wrapper to suppress any output from the nohup command itself, ensuring only the PID is returned
 
     ssh = SSHManager()
     ssh.connect()
@@ -466,19 +449,24 @@ def list_logs(verbose: bool = False):
     try:
         while True:
             _display_log_list(entries)
-            choice = _read_selection(len(entries))
+            try:
+                choice = _read_selection(len(entries))
+            except KeyboardInterrupt:
+                break
             if choice is None:
                 break
             entry = entries[choice - 1]
             content, _ = ssh.exec(f"cat {entry['path']} 2>/dev/null || true", timeout=30)
             _display_log_content(entry, content)
+    except KeyboardInterrupt:
+        pass
     finally:
         ssh.disconnect()
         _clear_screen()
 
 
 def view_log(session_id: str, verbose: bool = False):
-    """Print the full contents of a copilot session log."""
+    """Display the full contents of a copilot session log in a paginated format."""
     syncript_path = _find_config()
     _apply_config(syncript_path, verbose)
 
@@ -498,7 +486,7 @@ def view_log(session_id: str, verbose: bool = False):
     if not out.strip():
         print(f"No log found for session {session_id}.")
     else:
-        sys.stdout.write(out)
+        _page_content(out)
 
 
 def stop_copilot(session_id: str, verbose: bool = False):
